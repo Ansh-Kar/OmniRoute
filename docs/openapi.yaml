@@ -2150,6 +2150,102 @@ paths:
         "200":
           description: Complete catalog with all providers
 
+  /api/models/tags:
+    get:
+      tags: [Models]
+      summary: Query models by tag (provider, category, benchmark)
+      description: >-
+        Fork(parallel-execution) retrieval surface of the model tag index.
+        Filter by category (chat, coder, reasoning, vision, image-gen,
+        speech-to-text, ...), provider(s), minimum benchmark score and
+        capability flags; `diverse=true` round-robins across providers and
+        `distinct=true` collapses relay duplicates onto the canonical
+        provider. `panel=true&category=...&size=N` previews the exact fusion
+        panel a combo's config.panelFromTags would resolve at dispatch.
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+          required: false
+        - name: provider
+          in: query
+          schema:
+            type: string
+          required: false
+        - name: providers
+          in: query
+          schema:
+            type: string
+          required: false
+          description: Comma-separated provider allowlist
+        - name: excludeProviders
+          in: query
+          schema:
+            type: string
+          required: false
+          description: Comma-separated provider blocklist
+        - name: minBenchmark
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 100
+          required: false
+        - name: requireTools
+          in: query
+          schema:
+            type: boolean
+          required: false
+        - name: requireVision
+          in: query
+          schema:
+            type: boolean
+          required: false
+        - name: minContextLength
+          in: query
+          schema:
+            type: integer
+          required: false
+        - name: limit
+          in: query
+          schema:
+            type: integer
+          required: false
+        - name: diverse
+          in: query
+          schema:
+            type: boolean
+          required: false
+        - name: distinct
+          in: query
+          schema:
+            type: boolean
+          required: false
+        - name: panel
+          in: query
+          schema:
+            type: boolean
+          required: false
+          description: Return a fusion-panel resolution instead of a flat list
+        - name: size
+          in: query
+          schema:
+            type: integer
+          required: false
+          description: Panel mode only — requested panel size (default 4)
+        - name: perProvider
+          in: query
+          schema:
+            type: integer
+          required: false
+          description: Panel mode only — hard cap on models per provider (default 1)
+      responses:
+        "200":
+          description: Tagged model list (or fusion panel resolution in panel mode)
+        "400":
+          description: Invalid category or out-of-range minBenchmark
+
   # ─── Management Endpoints ──────────────────────────────────────
 
   /api/providers:

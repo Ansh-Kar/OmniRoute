@@ -1614,6 +1614,43 @@ paths:
         "200":
           description: Complete catalog with all providers
 
+  /api/models/tags:
+    get:
+      tags: [Models]
+      summary: Query models by tag (provider, category, benchmark)
+      description: >-
+        Fork(parallel-execution) retrieval surface of the model tag index.
+        Filter by category (chat, coder, reasoning, vision, image-gen,
+        speech-to-text, ...), provider(s), minimum benchmark score and
+        capability flags. `panel=true&category=...&size=N` previews the exact
+        fusion panel a combo's config.panelFromTags would resolve at dispatch.
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+          required: false
+        - name: minBenchmark
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 100
+          required: false
+        - name: diverse
+          in: query
+          schema:
+            type: boolean
+          required: false
+        - name: panel
+          in: query
+          schema:
+            type: boolean
+          required: false
+      responses:
+        "200":
+          description: Tagged model list (or fusion panel resolution in panel mode)
+
   # ─── Management Endpoints ──────────────────────────────────────
 
   /api/providers:

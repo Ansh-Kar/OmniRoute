@@ -206,7 +206,7 @@ export function parseRerankModel(modelStr) {
  * Get all rerank models as a flat list
  */
 export function getAllRerankModels() {
-  const models = [];
+  const models: { id: string; name: string; provider: string }[] = [];
   for (const [providerId, config] of Object.entries(RERANK_PROVIDERS)) {
     for (const model of config.models) {
       models.push({

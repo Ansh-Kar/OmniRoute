@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MODEL_CATEGORIES } from "@omniroute/open-sse/services/modelTags/taxonomy.ts";
 import {
   ACCOUNT_FALLBACK_STRATEGY_VALUES,
   ROUTING_STRATEGY_VALUES,
@@ -261,6 +262,30 @@ export const comboRuntimeConfigSchema = z
       })
       .strict()
       .optional(),
+    // Fork(parallel-execution): tag-driven fusion panel. When set, the panel is
+    // resolved at dispatch time from the model tag index
+    // (open-sse/services/modelTags) instead of the combo's literal model list —
+    // `category` picks the retrieval category (coder, vision, image-gen, …),
+    // `minBenchmark` floors quality, `perProvider` (default 1) plus
+    // distinct-model selection guarantee the panel spans multiple providers.
+    // A combo with panelFromTags may store an EMPTY models list (the schema
+    // exemption below); resolution failure at dispatch falls back to the
+    // literal list, so a combo carrying both uses models as its fallback.
+    // Ignored (with a runtime warn) by every non-fusion strategy, mirroring
+    // judgeModel/fusionTuning (#6455).
+    panelFromTags: z
+      .object({
+        category: z.enum(MODEL_CATEGORIES),
+        size: z.coerce.number().int().min(2).max(40).optional(),
+        minBenchmark: z.coerce.number().min(0).max(100).optional(),
+        perProvider: z.coerce.number().int().min(1).max(40).optional(),
+        providers: z.array(z.string().trim().min(1).max(120)).max(40).optional(),
+        excludeProviders: z.array(z.string().trim().min(1).max(120)).max(40).optional(),
+        requireTools: z.boolean().optional(),
+        requireVision: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     // Context window requirements for combo target filtering and sorting.
     // minContextWindow: filters out models with context windows below this threshold.
     // maxContextWindow: filters out models with context windows above this threshold.
@@ -334,6 +359,28 @@ export function requiresQuotaOnlyComboRefExecute(value: QuotaOnlyComboRefState):
   );
 }
 
+/**
+ * Fork(parallel-execution): the models list may be empty ONLY when the combo
+ * (or update payload) carries `config.panelFromTags` — a fusion combo whose
+ * panel is resolved at dispatch time from the model tag index. Keeps the
+ * pre-fork guarantee ("a combo requires at least one model") for every other
+ * shape, with the same error messages operators already know.
+ */
+function validateComboModelsPresence(
+  value: { models?: unknown[]; config?: Record<string, unknown> | null },
+  ctx: z.RefinementCtx
+): void {
+  const hasTagPanel = !!value.config && typeof value.config.panelFromTags === "object";
+  if (hasTagPanel) return;
+  if (value.models && value.models.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "a combo requires at least one model (or config.panelFromTags on a fusion combo)",
+      path: ["models"],
+    });
+  }
+}
+
 function validateQuotaOnlyComboRefs(value: QuotaOnlyComboRefState, ctx: z.RefinementCtx): void {
   if (requiresQuotaOnlyComboRefExecute(value)) {
     ctx.addIssue({
@@ -348,7 +395,11 @@ export const createComboSchema = z
   .object({
     name: comboNameSchema,
     description: z.string().max(2000).optional(),
-    models: z.array(comboModelEntry).min(1, "a combo requires at least one model"),
+    // Fork(parallel-execution): an EMPTY list is valid only for a fusion combo
+    // carrying config.panelFromTags (the panel is resolved at dispatch time).
+    // The min-1 rule moved into validateComboModelsPresence below so the
+    // exemption and its error message live in exactly one place.
+    models: z.array(comboModelEntry),
     strategy: comboStrategySchema.optional().default("priority"),
     config: comboRuntimeConfigSchema.optional(),
     allowedProviders: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
@@ -368,7 +419,8 @@ export const createComboSchema = z
       .optional()
       .nullable(),
   })
-  .superRefine(validateQuotaOnlyComboRefs);
+  .superRefine(validateQuotaOnlyComboRefs)
+  .superRefine(validateComboModelsPresence);
 
 export const updateComboDefaultsSchema = z
   .object({
@@ -410,10 +462,10 @@ export const updateComboSchema = z
     // An update may not remove every model from a combo, or a working combo
     // loses every target. Creation refuses an empty list too: since the CLI
     // gained --models (#10954), an empty draft has no remaining legitimate path.
-    models: z
-      .array(comboModelEntry)
-      .min(1, "an update cannot remove every model from a combo")
-      .optional(),
+    // Fork(parallel-execution): emptying the list IS legitimate when the same
+    // payload sets config.panelFromTags (fusion resolves its panel from tags);
+    // see validateComboModelsPresence.
+    models: z.array(comboModelEntry).optional(),
     strategy: comboStrategySchema.optional(),
     config: comboRuntimeConfigSchema.optional(),
     isActive: z.boolean().optional(),
@@ -456,7 +508,8 @@ export const updateComboSchema = z
         path: [],
       });
     }
-  });
+  })
+  .superRefine(validateComboModelsPresence);
 
 export const reorderCombosSchema = z
   .object({

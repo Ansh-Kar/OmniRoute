@@ -16,6 +16,7 @@ import { getCachedProviderConnections } from "../../../src/lib/db/readCache";
 import { getCircuitBreaker } from "../../../src/shared/utils/circuitBreaker";
 import { fisherYatesShuffle, getNextFromDeck } from "../../../src/shared/utils/shuffleDeck";
 import { handleFusionChat, type FusionTuning } from "../fusion.ts";
+import { resolveFusionTagPanel } from "../modelTags/index.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
 import { errorResponseWithComboDiagnostics } from "../../utils/error.ts";
 import { parseModel } from "../model.ts";
@@ -439,8 +440,18 @@ export async function tryFusionDispatch(args: {
   }
   if (strategy !== "fusion") return null;
 
+  // Fork(parallel-execution): tag-driven fusion panel. `config.panelFromTags`
+  // resolves the panel from the model tag index (provider + category +
+  // benchmark retrieval — open-sse/services/modelTags) at DISPATCH time, so
+  // the combo tracks "the best coder models across providers" instead of a
+  // hand-maintained model list that rots with every vendor release. A
+  // malformed spec or an empty resolution logs and falls back to the literal
+  // combo.models list, so pre-fork combos behave byte-identically.
+  const tagPanel = resolveFusionTagPanel(cfg, { comboName: combo.name, log });
+  const fusionCombo = tagPanel ? { ...combo, models: tagPanel.models } : combo;
+
   let allResolvedFusionTargets = resolveComboTargets(
-    combo,
+    fusionCombo,
     args.allCombos,
     clampComboDepth(config.maxComboDepth),
     args.hiddenModelsByProvider

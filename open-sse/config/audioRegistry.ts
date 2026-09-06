@@ -808,7 +808,7 @@ export function missingAudioProviderCredentialsMessage(
  * Get all audio models as a flat list
  */
 export function getAllAudioModels() {
-  const models = [];
+  const models: { id: string; name: string; provider: string; subtype: string }[] = [];
 
   for (const [providerId, config] of Object.entries(AUDIO_TRANSCRIPTION_PROVIDERS)) {
     for (const model of config.models) {
