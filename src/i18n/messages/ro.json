@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "Cât timp se așteaptă modelele lente din panel după ce s-a atins cvorumul (implicit 8000).",
     "fusionPanelHardTimeoutMs": "Timp limită strict panel (ms)",
     "fusionPanelHardTimeoutMsHelp": "Limită absolută pentru ca un singur model blocat să nu blocheze întregul panel (implicit 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Modele",
     "autoBalance": "Auto-echilibrare",
     "advancedSettings": "Setări avansate",

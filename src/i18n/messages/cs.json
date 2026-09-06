@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "Jak dlouho čekat na pomalé modely v panelu po dosažení kvóra (výchozí 8000).",
     "fusionPanelHardTimeoutMs": "Pevný časový limit panelu (ms)",
     "fusionPanelHardTimeoutMsHelp": "Absolutní limit, aby jeden zamrznutý model nezablokoval celý panel (výchozí 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Modely",
     "autoBalance": "Auto-vyvážení",
     "advancedSettings": "Pokročilé nastavení",

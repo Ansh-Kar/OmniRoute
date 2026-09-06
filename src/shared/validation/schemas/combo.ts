@@ -286,6 +286,51 @@ export const comboRuntimeConfigSchema = z
       })
       .strict()
       .optional(),
+    // Fork(parallel-execution): swarm strategy (open-sse/services/swarm.ts) —
+    // different tasks to different models, in parallel. Each task carries its
+    // own instruction and its own worker: an explicit `provider/model` string
+    // or a `fromTags` spec resolved at dispatch time (provider + category +
+    // benchmark retrieval — same selectors as panelFromTags). `synthesize`
+    // merges task outputs through `judgeModel` (defaults to the first
+    // successful worker); without it the run returns labeled per-task results
+    // (resultFormat sections|json). `maxConcurrency` bounds the parallel pool
+    // (default 8). Ignored (with a runtime warn) by every non-swarm strategy,
+    // mirroring judgeModel/fusionTuning (#6455). A combo with config.swarm
+    // may store an EMPTY models list (schema exemption below) — tasks are
+    // self-contained; per-request overrides arrive as `body.swarm`.
+    swarm: z
+      .object({
+        tasks: z
+          .array(
+            z
+              .object({
+                label: z.string().trim().min(1).max(200).optional(),
+                task: z.string().trim().min(1).max(20_000),
+                model: z.string().trim().min(1).max(400).optional(),
+                fromTags: z
+                  .object({
+                    category: z.enum(MODEL_CATEGORIES),
+                    minBenchmark: z.number().min(0).max(100).optional(),
+                    providers: z.array(z.string().trim().min(1).max(120)).max(40).optional(),
+                    excludeProviders: z.array(z.string().trim().min(1).max(120)).max(40).optional(),
+                    requireTools: z.boolean().optional(),
+                    requireVision: z.boolean().optional(),
+                  })
+                  .strict()
+                  .optional(),
+              })
+              .strict()
+          )
+          .min(1)
+          .max(40),
+        synthesize: z.boolean().optional(),
+        judgeModel: z.string().trim().max(200).optional(),
+        defaultModel: z.string().trim().max(400).optional(),
+        maxConcurrency: z.coerce.number().int().min(1).max(40).optional(),
+        resultFormat: z.enum(["sections", "json"]).optional(),
+      })
+      .strict()
+      .optional(),
     // Context window requirements for combo target filtering and sorting.
     // minContextWindow: filters out models with context windows below this threshold.
     // maxContextWindow: filters out models with context windows above this threshold.
@@ -362,9 +407,11 @@ export function requiresQuotaOnlyComboRefExecute(value: QuotaOnlyComboRefState):
 /**
  * Fork(parallel-execution): the models list may be empty ONLY when the combo
  * (or update payload) carries `config.panelFromTags` — a fusion combo whose
- * panel is resolved at dispatch time from the model tag index. Keeps the
- * pre-fork guarantee ("a combo requires at least one model") for every other
- * shape, with the same error messages operators already know.
+ * panel is resolved at dispatch time from the model tag index — or
+ * `config.swarm` — a swarm combo whose tasks each name their own worker
+ * (explicit model or fromTags) so no literal models list is needed. Keeps
+ * the pre-fork guarantee ("a combo requires at least one model") for every
+ * other shape, with the same error messages operators already know.
  */
 function validateComboModelsPresence(
   value: { models?: unknown[]; config?: Record<string, unknown> | null },
@@ -372,10 +419,17 @@ function validateComboModelsPresence(
 ): void {
   const hasTagPanel = !!value.config && typeof value.config.panelFromTags === "object";
   if (hasTagPanel) return;
+  const swarmConfig = value.config?.swarm;
+  const hasSwarmTasks =
+    !!swarmConfig &&
+    typeof swarmConfig === "object" &&
+    Array.isArray((swarmConfig as { tasks?: unknown }).tasks) &&
+    ((swarmConfig as { tasks: unknown[] }).tasks.length > 0);
+  if (hasSwarmTasks) return;
   if (value.models && value.models.length === 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "a combo requires at least one model (or config.panelFromTags on a fusion combo)",
+      message: "a combo requires at least one model (or config.panelFromTags on a fusion combo / config.swarm tasks on a swarm combo)",
       path: ["models"],
     });
   }

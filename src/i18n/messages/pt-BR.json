@@ -3274,6 +3274,8 @@
     "fusionStragglerGraceMsHelp": "Quanto tempo esperar por modelos lentos do painel após o quórum ser atingido (padrão 8000).",
     "fusionPanelHardTimeoutMs": "Timeout máximo do painel (ms)",
     "fusionPanelHardTimeoutMsHelp": "Limite absoluto para que um modelo travado não bloqueie o painel inteiro (padrão 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Modelos",
     "autoBalance": "Auto-balancear",
     "advancedSettings": "Configurações Avançadas",

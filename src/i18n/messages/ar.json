@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "مدة الانتظار لنماذج اللوحة البطيئة بمجرد الوصول إلى النصاب القانوني (الافتراضي 8000).",
     "fusionPanelHardTimeoutMs": "المهلة القصوى للوحة (ملي ثانية)",
     "fusionPanelHardTimeoutMsHelp": "الحد الأقصى المطلق حتى لا يتسبب نموذج واحد معلق في تعطيل اللوحة بأكملها (الافتراضي 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "نماذج",
     "autoBalance": "التوازن التلقائي",
     "advancedSettings": "الإعدادات المتقدمة",

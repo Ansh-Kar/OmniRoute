@@ -20,7 +20,7 @@
 
 import { applyStrategyOrdering } from "./applyStrategyOrdering.ts";
 import { resolveAutoStrategyOrder } from "./resolveAutoStrategy.ts";
-import { tryFusionDispatch, tryPipelineDispatch } from "./dispatchPrelude.ts";
+import { tryFusionDispatch, tryPipelineDispatch, trySwarmDispatch } from "./dispatchPrelude.ts";
 import { resolveComboTargetPipeline } from "./targetResolution.ts";
 
 /**
@@ -34,6 +34,7 @@ export const COMBO_STRATEGY_DISPATCH_LEAVES = {
   resolveAutoStrategyOrder,
   tryFusionDispatch,
   tryPipelineDispatch,
+  trySwarmDispatch,
   resolveComboTargetPipeline,
 } as const;
 
@@ -41,8 +42,8 @@ export const COMBO_STRATEGY_DISPATCH_LEAVES = {
  * Conjunto exato de estratégias de roteamento que possuem implementação de despacho real.
  *
  * Cobertura esperada (em `main` do gate): este set ∪ IMPLICIT_DEFAULT_STRATEGIES deve
- * igualar o canônico. Atualmente todas as 20 estratégias canônicas têm branch — então
- * HANDLED_COMBO_STRATEGIES já contém as 20 e IMPLICIT_DEFAULT_STRATEGIES está vazio.
+ * igualar o canônico. Atualmente todas as 21 estratégias canônicas têm branch — então
+ * HANDLED_COMBO_STRATEGIES já contém as 21 e IMPLICIT_DEFAULT_STRATEGIES está vazio.
  */
 export const HANDLED_COMBO_STRATEGIES: readonly string[] = [
   "priority",
@@ -64,5 +65,6 @@ export const HANDLED_COMBO_STRATEGIES: readonly string[] = [
   "cache-optimized",
   "fusion",
   "pipeline",
+  "swarm",
   "quota-share",
 ] as const;

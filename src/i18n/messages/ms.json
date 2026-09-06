@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "Berapa lama untuk menunggu model panel yang lambat setelah kuorum dicapai (lalai 8000).",
     "fusionPanelHardTimeoutMs": "Had masa tamat keras panel (ms)",
     "fusionPanelHardTimeoutMsHelp": "Had mutlak supaya satu model yang tergantung tidak dapat melambatkan keseluruhan panel (lalai 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "model",
     "autoBalance": "Imbangan automatik",
     "advancedSettings": "Tetapan Lanjutan",

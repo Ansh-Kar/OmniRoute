@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "Quanto attendere i modelli lenti del panel una volta raggiunto il quorum (default 8000).",
     "fusionPanelHardTimeoutMs": "Timeout massimo panel (ms)",
     "fusionPanelHardTimeoutMsHelp": "Limite assoluto per evitare che un modello bloccato fermi l'intero panel (default 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Modelli",
     "autoBalance": "Bilanciamento automatico",
     "advancedSettings": "Impostazioni avanzate",

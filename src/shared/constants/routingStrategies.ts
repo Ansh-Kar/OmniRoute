@@ -18,6 +18,7 @@ export const ROUTING_STRATEGY_VALUES = [
   "cache-optimized",
   "fusion",
   "pipeline",
+  "swarm",
 ] as const;
 
 export type RoutingStrategyValue = (typeof ROUTING_STRATEGY_VALUES)[number];
@@ -219,6 +220,13 @@ export const ROUTING_STRATEGIES: RoutingStrategyOption[] = [
     combosDescKey: "pipelineDesc",
     settingsDescKey: "pipelineDesc",
     icon: "linear_scale",
+  },
+  {
+    value: "swarm",
+    labelKey: "swarm",
+    combosDescKey: "swarmDesc",
+    settingsDescKey: "swarmDesc",
+    icon: "smart_toy",
   },
 ];
 

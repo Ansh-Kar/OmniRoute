@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "Hur länge man ska vänta på långsamma panelmodeller när kvorum har uppnåtts (standard 8000).",
     "fusionPanelHardTimeoutMs": "Hård tidsgräns för panel (ms)",
     "fusionPanelHardTimeoutMsHelp": "Absolut gräns så att en låst modell inte kan fördröja hela panelen (standard 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Modeller",
     "autoBalance": "Automatisk balansering",
     "advancedSettings": "Avancerade inställningar",

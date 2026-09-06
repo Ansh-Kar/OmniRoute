@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "مدت زمان انتظار برای مدل‌های کند پنل پس از رسیدن به حد نصاب (پیش‌فرض ۸۰۰۰).",
     "fusionPanelHardTimeoutMs": "مهلت زمانی قطعی پنل (میلی‌ثانیه)",
     "fusionPanelHardTimeoutMsHelp": "سقف مطلق برای اینکه یک مدل متوقف‌شده نتواند کل پنل را معطل کند (پیش‌فرض ۹۰۰۰۰).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Models",
     "autoBalance": "Auto-balance",
     "advancedSettings": "Advanced Settings",

@@ -50,7 +50,43 @@ byte-identical in behavior. Combo schema: `models` may be empty when
 
 Examples: `examples/fusion-parallel/` (combos + import script).
 
-### 3. Parallel-agent admission + transport profile (deployment defaults)
+### 3. Agent-swarm combo strategy (`strategy: "swarm"`, `config.swarm`)
+
+The one-call multi-task fan-out that fusion (same task × N models) and
+pipeline (different tasks, sequential) both lack: **N different tasks → N
+different models, in parallel** (`open-sse/services/swarm.ts`).
+
+- Each task carries its own instruction (injected as the worker's leading
+  system turn, reusing `prependSystemInstruction`) and its own worker: an
+  explicit `provider/model`, a `fromTags` spec (same selector vocabulary as
+  `panelFromTags`, resolved at dispatch time), or the combo's `defaultModel`.
+- **Cross-task diversity**: tag resolution skips models already claimed by an
+  earlier task while alternatives exist — identical specs still yield
+  different models from different providers.
+- Workers run chat-shaped like fusion panel members: tools stripped,
+  non-streaming, per-target admission lane probe (#9654 discipline), 120 s
+  per-task timeout, bounded concurrency pool (default 8).
+- Per-task isolation: a failed/timed-out/lane-full task is reported in the
+  result and never sinks the run; total failure 503s with per-task reasons.
+  More than 40 tasks is refused pre-fan-out (#1905 heap guard).
+- Response shapes: labeled sections or structured JSON (synthetic OpenAI chat
+  completion), or `synthesize: true` — a synthesizer call on the original
+  request (streaming + tools preserved, fusion-judge discipline; #6771-style
+  bypass for tool-bearing requests without synthesis).
+- **Per-request swarms**: `body.swarm` (tasks + any run option) overrides the
+  combo's stored tasks and is stripped before workers are dispatched; a combo
+  may also define tasks as `models` steps with per-step `prompt` (the pipeline
+  shape, executed in parallel).
+- Registered as a canonical routing strategy end-to-end:
+  `ROUTING_STRATEGY_VALUES`/`ROUTING_STRATEGIES` metadata,
+  `HANDLED_COMBO_STRATEGIES`/dispatch leaves (known-symbols gate G1),
+  `comboStrategySchema` (schema options derive from the shared constant), and
+  `combos.swarm`/`combos.swarmDesc` i18n keys in all 42 locales. The combo
+  schema allows an empty `models` list when `config.swarm.tasks` is present.
+
+Examples: `examples/swarm/` (combos + import script + README).
+
+### 4. Parallel-agent admission + transport profile (deployment defaults)
 
 No admission **code** changes — upstream semantics are kept exactly (all 74
 admission/proxy-dispatcher tests green). The fork ships deployment defaults
@@ -64,7 +100,7 @@ instead (`.env.example`, `docker-compose.yml`, annotated in
 | `OMNIROUTE_CHAT_ADMISSION_MAX_QUEUED_BYTES` | `4 MB`   | `16 MB` | several ~750 KB agent bodies parked during the wait |
 | `OMNIROUTE_PROXY_DISPATCHER_CONNECTIONS`    | `32`     | `64`    | fusion panels × agents sharing one account proxy    |
 
-### 4. Transport: concurrent proxy dispatcher streams (already upstream)
+### 5. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)
 (`fix(proxy): allow concurrent proxy dispatcher streams`) was **merged into
@@ -84,9 +120,10 @@ contribution is the capacity bump above + documentation.
 
 ## Documentation
 
-- `docs/guides/PARALLEL_EXECUTION.md` — the full guide (tags, panels,
+- `docs/guides/PARALLEL_EXECUTION.md` — the full guide (tags, panels, swarms,
   admission, transport).
-- `examples/fusion-parallel/README.md` — examples walkthrough.
+- `examples/fusion-parallel/README.md` — fusion panel examples walkthrough.
+- `examples/swarm/README.md` — swarm examples walkthrough.
 - `docs/reference/ENVIRONMENT.md` — fork deployment defaults annotated on the
   affected rows.
 
@@ -95,12 +132,20 @@ contribution is the capacity bump above + documentation.
 - `tsc -p tsconfig.typecheck-core.json` — clean.
 - New tests: `tests/unit/services/model-tags.test.ts` (15),
   `tests/unit/services/fusion-tag-panel.test.ts` (5, e2e through the real
-  combo engine + live registry).
+  combo engine + live registry),
+  `tests/unit/services/swarm-strategy.test.ts` (21, e2e dispatch + pure
+  units: parallel fan-out, body.swarm override, tag diversity, partial/total
+  failure, synthesis, tool-bearing bypass, schema, parsing).
 - Existing suites re-run green: fusion strategy/judge/partial-failure (10),
-  combo-config schema, full `tests/unit/combo/*` (186), admission +
-  proxy-dispatcher (74).
+  combo-config schema, full `tests/unit/combo/*` + `fusion-*` (203),
+  `tests/unit/services/*` (388), admission + proxy-dispatcher (377),
+  `autocombo-unification` (7 — strategy parity).
+- i18n gates: translation-ratio (41 locales within baseline) and
+  ui-keys-coverage (all ≥ 80%) — `combos.swarm`/`combos.swarmDesc` added to
+  all 42 locales.
 - Gates: `check:env-doc-sync`, `check:openapi-routes` (695 paths),
-  `check:openapi-coverage` (99.3%), `check:api-docs-refs` — all pass.
+  `check:api-docs-refs`, `check:known-symbols` (21 canonical strategies, all
+  dispatched) — all pass.
 
 Not re-verified here (sandbox limits): `typecheck:api`/dashboard typecheck
 (needs >2 GB RAM for the full Next.js program) and the Electron/Docker builds.

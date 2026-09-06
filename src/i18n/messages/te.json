@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "కోరం చేరుకున్న తర్వాత నెమ్మదిగా ఉన్న ప్యానెల్ మోడళ్ల కోసం ఎంత సమయం వేచి ఉండాలి (డిఫాల్ట్ 8000).",
     "fusionPanelHardTimeoutMs": "ప్యానెల్ హార్డ్ టైమ్‌అవుట్ (ms)",
     "fusionPanelHardTimeoutMsHelp": "ఒక నిలిచిపోయిన మోడల్ మొత్తం ప్యానెల్‌ను నిలిపివేయకుండా ఉండేందుకు సంపూర్ణ పరిమితి (డిఫాల్ట్ 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Models",
     "autoBalance": "Auto-balance",
     "advancedSettings": "Advanced Settings",

@@ -4,6 +4,8 @@
  * Consumers:
  *   - combo fusion dispatch (config.panelFromTags → parallel panels):
  *     open-sse/services/combo/dispatchPrelude.ts
+ *   - swarm dispatch (per-task fromTags specialists → parallel tasks):
+ *     open-sse/services/swarm.ts
  *   - HTTP retrieval: src/app/api/models/tags/route.ts
  *   - docs: docs/guides/PARALLEL_EXECUTION.md
  *

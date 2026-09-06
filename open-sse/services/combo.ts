@@ -244,6 +244,7 @@ import {
   tryPinnedModelDispatch,
   tryPipelineDispatch,
   tryRuntimeUnitDispatch,
+  trySwarmDispatch,
 } from "./combo/dispatchPrelude.ts";
 import { isRetryAfterEligibleStatus } from "./combo/unavailableRetryGate.ts";
 import { isRecord } from "./combo/comboData.ts";
@@ -852,6 +853,22 @@ async function handleComboChatInner({
     runCombo: handleComboChat,
   });
   if (fusionDispatch) return fusionDispatch;
+
+  // Swarm (fork: parallel execution): different tasks to different models in
+  // parallel. Sits right after fusion so tag-driven panels stay first-class.
+  const swarmDispatch = await trySwarmDispatch({
+    body,
+    combo,
+    cfg,
+    config,
+    strategy,
+    allCombos,
+    handleSingleModelWithTimeout,
+    log,
+    hiddenModelsByProvider,
+    perTargetAdmission,
+  });
+  if (swarmDispatch) return swarmDispatch;
 
   // Chaos mode (parallel multi-model dispatch): detection + dispatch live in
   // chaosEngine.ts (dispatchChaosFromCombo), returning null when not chaos-enabled.

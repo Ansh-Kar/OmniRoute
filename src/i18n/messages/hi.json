@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "कोरम पूरा होने के बाद धीमे पैनल मॉडलों के लिए कितनी देर प्रतीक्षा करनी है (डिफ़ॉल्ट 8000)।",
     "fusionPanelHardTimeoutMs": "पैनल हार्ड टाइमआउट (ms)",
     "fusionPanelHardTimeoutMsHelp": "अधिकतम सीमा ताकि एक अटका हुआ मॉडल पूरे पैनल को रोक न सके (डिफ़ॉल्ट 90000)।",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "मॉडल",
     "autoBalance": "स्वत: संतुलन",
     "advancedSettings": "उन्नत सेटिंग्स",

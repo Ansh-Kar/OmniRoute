@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "Kung gaano katagal maghihintay para sa mabagal na mga panel model kapag naabot na ang quorum (default 8000).",
     "fusionPanelHardTimeoutMs": "Hard timeout ng panel (ms)",
     "fusionPanelHardTimeoutMsHelp": "Absolutong limitasyon upang ang isang nag-hang na modelo ay hindi makapagpatigil sa buong panel (default 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Mga modelo",
     "autoBalance": "Awtomatikong balanse",
     "advancedSettings": "Mga Advanced na Setting",

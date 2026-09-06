@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "Kuinka kauan hitaita paneelimalleja odotetaan, kun päätösvaltaisuus on saavutettu (oletus 8000).",
     "fusionPanelHardTimeoutMs": "Paneelin ehdoton aikakatkaisu (ms)",
     "fusionPanelHardTimeoutMsHelp": "Ehdoton yläraja, jotta yksi jumiutunut malli ei voi pysäyttää koko paneelia (oletus 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Mallit",
     "autoBalance": "Automaattinen tasapainotus",
     "advancedSettings": "Lisäasetukset",

@@ -1,0 +1,113 @@
+[
+  {
+    "name": "launch-swarm",
+    "description": "Product-launch swarm: strategy (top reasoning model), copy (explicit model), art direction (vision model) run in parallel, merged by a synthesizer.",
+    "strategy": "swarm",
+    "models": [],
+    "config": {
+      "swarm": {
+        "tasks": [
+          {
+            "label": "strategy",
+            "task": "Draft the go-to-market strategy for the product in the user's request: positioning, pricing, launch channels, and a 30-day timeline.",
+            "fromTags": { "category": "reasoning", "minBenchmark": 85 }
+          },
+          {
+            "label": "copy",
+            "task": "Write the landing-page copy for the product in the user's request: hero headline, three benefit blocks, and a CTA.",
+            "fromTags": { "category": "chat", "minBenchmark": 80 }
+          },
+          {
+            "label": "art",
+            "task": "Describe the hero illustration and overall visual direction for the product in the user's request.",
+            "fromTags": { "category": "vision", "minBenchmark": 80 }
+          }
+        ],
+        "synthesize": true,
+        "maxConcurrency": 8
+      }
+    }
+  },
+  {
+    "name": "research-swarm",
+    "description": "Parallel research squad returning structured JSON records per task — for programmatic consumption (agents, pipelines).",
+    "strategy": "swarm",
+    "models": [],
+    "config": {
+      "swarm": {
+        "tasks": [
+          {
+            "label": "summary",
+            "task": "Summarize the user's material into five bullet points.",
+            "fromTags": { "category": "chat", "minBenchmark": 75 }
+          },
+          {
+            "label": "entities",
+            "task": "Extract every person, company, product and date mentioned, as a plain list.",
+            "fromTags": { "category": "chat", "minBenchmark": 75 }
+          },
+          {
+            "label": "critique",
+            "task": "Red-team the user's material: weakest claims, missing evidence, counterarguments.",
+            "fromTags": { "category": "reasoning", "minBenchmark": 80 }
+          }
+        ],
+        "resultFormat": "json",
+        "maxConcurrency": 6
+      }
+    }
+  },
+  {
+    "name": "dev-squad",
+    "description": "Coding squad: architect plans, coder drafts, reviewer critiques — all in parallel, one synthesized answer.",
+    "strategy": "swarm",
+    "models": [],
+    "config": {
+      "swarm": {
+        "tasks": [
+          {
+            "label": "architect",
+            "task": "Propose an implementation plan (files, interfaces, edge cases) for the user's request. Do not write the full code.",
+            "fromTags": { "category": "reasoning", "minBenchmark": 80, "requireTools": true }
+          },
+          {
+            "label": "coder",
+            "task": "Write the core code for the user's request. Focus on the happy path plus the two most likely failure modes.",
+            "fromTags": { "category": "coder", "minBenchmark": 80, "requireTools": true }
+          },
+          {
+            "label": "reviewer",
+            "task": "Review the user's request as a staff engineer: list security, performance and correctness concerns a naive implementation would hit.",
+            "fromTags": { "category": "coder", "minBenchmark": 80 }
+          }
+        ],
+        "synthesize": true,
+        "judgeModel": "anthropic/claude-opus-4.6",
+        "maxConcurrency": 6
+      }
+    }
+  },
+  {
+    "name": "ad-hoc-swarm",
+    "description": "Minimal swarm used with per-request tasks: send `body.swarm.tasks` on each call to fan any workload out to tag-picked specialists. Replace these placeholder tasks with your own at request time.",
+    "strategy": "swarm",
+    "models": [],
+    "config": {
+      "swarm": {
+        "tasks": [
+          {
+            "label": "one",
+            "task": "First subtask — overridden by body.swarm.tasks on each request.",
+            "fromTags": { "category": "chat", "minBenchmark": 75 }
+          },
+          {
+            "label": "two",
+            "task": "Second subtask — overridden by body.swarm.tasks on each request.",
+            "fromTags": { "category": "chat", "minBenchmark": 75 }
+          }
+        ],
+        "maxConcurrency": 8
+      }
+    }
+  }
+]

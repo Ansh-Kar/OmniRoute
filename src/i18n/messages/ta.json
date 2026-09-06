@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "கோரம் எட்டப்பட்டதும் மெதுவான பேனல் மாடல்களுக்காக எவ்வளவு நேரம் காத்திருக்க வேண்டும் (இயல்புநிலை 8000).",
     "fusionPanelHardTimeoutMs": "பேனல் இறுதி காலாவதி நேரம் (மி.வி)",
     "fusionPanelHardTimeoutMsHelp": "ஒரு முடங்கிய மாடல் முழு பேனலையும் நிறுத்தாமல் இருக்க விதிக்கப்படும் முழுமையான வரம்பு (இயல்புநிலை 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Models",
     "autoBalance": "Auto-balance",
     "advancedSettings": "Advanced Settings",

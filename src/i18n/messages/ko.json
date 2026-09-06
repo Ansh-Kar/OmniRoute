@@ -3273,6 +3273,8 @@
     "fusionStragglerGraceMsHelp": "정족수가 충족된 후 느린 패널 모델을 대기할 시간입니다(기본값: 8000).",
     "fusionPanelHardTimeoutMs": "패널 하드 제한 시간(ms)",
     "fusionPanelHardTimeoutMsHelp": "하나의 멈춘 모델이 전체 패널을 지연시키지 않도록 하는 절대적인 제한 시간입니다(기본값: 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "모델",
     "autoBalance": "자동 균형",
     "advancedSettings": "고급 설정",

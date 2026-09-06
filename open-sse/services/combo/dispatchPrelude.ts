@@ -16,6 +16,11 @@ import { getCachedProviderConnections } from "../../../src/lib/db/readCache";
 import { getCircuitBreaker } from "../../../src/shared/utils/circuitBreaker";
 import { fisherYatesShuffle, getNextFromDeck } from "../../../src/shared/utils/shuffleDeck";
 import { handleFusionChat, type FusionTuning } from "../fusion.ts";
+import {
+  executeSwarmRun,
+  parseSwarmRunConfig,
+  type SwarmTaskSpec,
+} from "../swarm.ts";
 import { resolveFusionTagPanel } from "../modelTags/index.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
 import { errorResponseWithComboDiagnostics } from "../../utils/error.ts";
@@ -633,6 +638,100 @@ export async function tryPipelineDispatch(args: {
     comboName: combo.name,
     maxRetries: config.maxRetries ?? 0,
     retryDelayMs: resolveDelayMs(config.retryDelayMs, 1000),
+  });
+}
+
+/**
+ * Swarm strategy (fork: parallel execution): different tasks to different
+ * models, in parallel — the one-call multi-task fan-out that fusion (same
+ * task, panel) and pipeline (different tasks, sequential) both lack.
+ *
+ * Task sources, highest priority first:
+ *   1. `body.swarm` — per-request override (tasks + any run option);
+ *   2. `config.swarm` — the combo's stored swarm definition;
+ *   3. combo.models steps carrying a per-step `prompt` (pipeline-style steps,
+ *      executed in PARALLEL here instead of sequentially).
+ *
+ * Each task's worker is an explicit `provider/model`, a tag spec
+ * (`fromTags`: provider + category + benchmark retrieval), or the combo's
+ * `defaultModel`. Results return labeled per task (`sections`/`json`), or a
+ * synthesizer model merges them into one answer (stream + tools preserved).
+ */
+export async function trySwarmDispatch(args: {
+  body: Record<string, unknown>;
+  combo: ComboLike;
+  cfg: Record<string, unknown>;
+  config: ComboSetupConfig;
+  strategy: string;
+  allCombos?: ComboCollectionLike;
+  handleSingleModelWithTimeout: HandleSingleModel;
+  log: ComboLogger;
+  hiddenModelsByProvider?: HiddenModelsByProvider;
+  perTargetAdmission?: PerTargetAdmissionHook | null;
+}): Promise<Response | null> {
+  const { body, combo, config, strategy, log } = args;
+  const comboSwarm = parseSwarmRunConfig(args.cfg.swarm);
+  if (strategy !== "swarm" && comboSwarm) {
+    log.warn(
+      "COMBO",
+      `Combo "${combo.name}" sets config.swarm but strategy is "${strategy}" — these fields are only consumed by the swarm strategy and will be ignored (#6455)`
+    );
+  }
+  if (strategy !== "swarm") return null;
+
+  const requestSwarm = parseSwarmRunConfig(body.swarm);
+  let tasks: SwarmTaskSpec[] | null =
+    requestSwarm?.tasks ?? comboSwarm?.tasks ?? null;
+  if (!tasks) {
+    // Fallback: combo.models steps with per-step prompts — the pipeline shape,
+    // run in parallel. Targets are resolved (combo refs expanded, hidden
+    // models dropped) exactly like tryPipelineDispatch; first healthy
+    // connection per step wins.
+    const resolvedTargets = resolveComboTargets(
+      combo,
+      args.allCombos,
+      clampComboDepth(config.maxComboDepth),
+      args.hiddenModelsByProvider
+    );
+    const seenSteps = new Set<string>();
+    const stepTasks: SwarmTaskSpec[] = [];
+    for (const target of resolvedTargets) {
+      const key = target.stepId ?? target.modelStr;
+      if (seenSteps.has(key)) continue;
+      seenSteps.add(key);
+      if (target.prompt && target.prompt.trim()) {
+        stepTasks.push({
+          label: target.label ?? undefined,
+          task: target.prompt.trim(),
+          model: target.modelStr,
+        });
+      }
+    }
+    tasks = stepTasks;
+  }
+
+  // #3378/#8332 discipline: a worker whose vision support cannot be confirmed
+  // `=== true` never receives an image-bearing body. Vetoed workers fall
+  // through to fromTags/defaultModel inside the resolver; a fully vetoed task
+  // is reported as failed instead of silently losing the image.
+  const swarmRequirements = deriveRequestCompatibilityRequirements(body);
+  const requiresVision = swarmRequirements.requiresVision;
+  return executeSwarmRun({
+    body,
+    tasks,
+    handleSingleModel: args.handleSingleModelWithTimeout,
+    log,
+    comboName: combo.name,
+    defaultModel: requestSwarm?.defaultModel ?? comboSwarm?.defaultModel ?? null,
+    maxConcurrency: requestSwarm?.maxConcurrency ?? comboSwarm?.maxConcurrency ?? null,
+    resultFormat: requestSwarm?.resultFormat ?? comboSwarm?.resultFormat ?? null,
+    synthesize: requestSwarm?.synthesize ?? comboSwarm?.synthesize ?? false,
+    judgeModel: requestSwarm?.judgeModel ?? comboSwarm?.judgeModel ?? null,
+    perTargetAdmission: args.perTargetAdmission,
+    isVisible: (modelStr) =>
+      isComboModelVisible(modelStr, null, args.hiddenModelsByProvider) &&
+      (!requiresVision ||
+        getResolvedModelCapabilities(modelStr).supportsVision === true),
   });
 }
 

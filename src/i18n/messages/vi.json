@@ -3274,6 +3274,8 @@
     "fusionStragglerGraceMsHelp": "Thời gian chờ các mô hình chậm trong nhóm sau khi đã đạt số lượng tối thiểu (mặc định là 8000).",
     "fusionPanelHardTimeoutMs": "Thời gian chờ tối đa của nhóm (ms)",
     "fusionPanelHardTimeoutMsHelp": "Giới hạn tuyệt đối để một mô hình bị treo không làm toàn bộ nhóm bị đình trệ (mặc định là 90000).",
+    "swarm": "Swarm",
+    "swarmDesc": "Fans work out as different tasks, picks a different specialist model for each (by tags or explicit model), and runs them all in parallel",
     "models": "Mô hình",
     "autoBalance": "Tự động cân bằng",
     "advancedSettings": "Cài đặt nâng cao",
