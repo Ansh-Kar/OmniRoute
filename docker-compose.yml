@@ -43,6 +43,21 @@ x-common: &common
     - LIVE_WS_ALLOWED_ORIGINS=${LIVE_WS_ALLOWED_ORIGINS:-http://localhost:20128,http://127.0.0.1:20128}
     - REDIS_URL=${REDIS_URL:-redis://redis:6379}
     - NODE_OPTIONS=--max-old-space-size=2048
+    # ── FORK(parallel-execution) admission + transport tuning ────────────────
+    # Bounded heavyweight chat admission for "main + concurrent subagents"
+    # (4 = one main + 3 subagents; match your agent count). The byte budget
+    # and heap-pressure shed stay in force underneath; the healthy-headroom
+    # bypass follows this value. See docs/guides/PARALLEL_EXECUTION.md.
+    - OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT=${OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT:-4}
+    # Bounded wait (5s) before a retryable 503 chat_admission_busy — drains
+    # agent bursts server-side instead of burning client retry budgets.
+    - OMNIROUTE_CHAT_ADMISSION_QUEUE_MS=${OMNIROUTE_CHAT_ADMISSION_QUEUE_MS:-5000}
+    # Parked-waiter body budget: 16 MB covers several ~750 KB agent bodies
+    # waiting at once (upstream default 4 MB rejected them mid-burst).
+    - OMNIROUTE_CHAT_ADMISSION_MAX_QUEUED_BYTES=${OMNIROUTE_CHAT_ADMISSION_MAX_QUEUED_BYTES:-16777216}
+    # Concurrent upstream sockets per cached proxy dispatcher (PR #4288):
+    # 64 fits fusion tag panels × concurrent agents sharing one proxy.
+    - OMNIROUTE_PROXY_DISPATCHER_CONNECTIONS=${OMNIROUTE_PROXY_DISPATCHER_CONNECTIONS:-64}
     # Codex App-Server transport (provider: codex-app-server). Inert unless the
     # `codex-app-server` compose profile is up (the sidecar below). Points the app
     # at the internal sidecar; the capability token is shared via the mounted file.
