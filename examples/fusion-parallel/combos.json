@@ -1,0 +1,97 @@
+[
+  {
+    "name": "parallel-coders",
+    "description": "Fusion panel of the best coding models across providers, resolved from tags at dispatch time. Judge synthesizes one final answer.",
+    "strategy": "fusion",
+    "models": [],
+    "config": {
+      "panelFromTags": {
+        "category": "coder",
+        "size": 4,
+        "minBenchmark": 80,
+        "perProvider": 1,
+        "requireTools": true
+      },
+      "fusionTuning": {
+        "minPanel": 2,
+        "stragglerGraceMs": 8000,
+        "panelHardTimeoutMs": 90000
+      }
+    }
+  },
+  {
+    "name": "parallel-vision",
+    "description": "Parallel panel of vision-capable models for image understanding / item recognition, then a judge synthesis.",
+    "strategy": "fusion",
+    "models": [],
+    "config": {
+      "panelFromTags": {
+        "category": "vision",
+        "size": 3,
+        "minBenchmark": 85,
+        "perProvider": 1,
+        "requireVision": true
+      },
+      "fusionTuning": {
+        "minPanel": 2,
+        "stragglerGraceMs": 10000
+      }
+    }
+  },
+  {
+    "name": "parallel-reasoning",
+    "description": "Parallel panel of reasoning models for planning and analysis.",
+    "strategy": "fusion",
+    "models": [],
+    "config": {
+      "panelFromTags": {
+        "category": "reasoning",
+        "size": 4,
+        "minBenchmark": 85,
+        "perProvider": 1
+      },
+      "fusionTuning": {
+        "minPanel": 2,
+        "stragglerGraceMs": 12000,
+        "panelHardTimeoutMs": 120000
+      }
+    }
+  },
+  {
+    "name": "parallel-generalists",
+    "description": "Parallel panel of flagship general assistants (no benchmark floor — good for small provider pools).",
+    "strategy": "fusion",
+    "models": [],
+    "config": {
+      "panelFromTags": {
+        "category": "chat",
+        "size": 3,
+        "minBenchmark": 85,
+        "perProvider": 1
+      },
+      "fusionTuning": {
+        "minPanel": 2,
+        "stragglerGraceMs": 8000
+      }
+    }
+  },
+  {
+    "name": "parallel-coders-restricted",
+    "description": "Same as parallel-coders but pinned to an explicit provider allowlist — useful when only some providers have active connections.",
+    "strategy": "fusion",
+    "models": [],
+    "config": {
+      "panelFromTags": {
+        "category": "coder",
+        "size": 3,
+        "minBenchmark": 0,
+        "perProvider": 1,
+        "providers": ["anthropic", "openai", "gemini", "moonshot", "minimax"]
+      },
+      "fusionTuning": {
+        "minPanel": 2,
+        "stragglerGraceMs": 8000
+      }
+    }
+  }
+]
