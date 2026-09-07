@@ -21,6 +21,7 @@
 
 import { inferModelCategories, type ModelCapabilityHints } from "./inference.ts";
 import { lookupBenchmarkSeed, type BenchmarkSeed } from "./seedBenchmarks.ts";
+import { BENCHMARK_AXES, lookupAxisSeed, type BenchmarkAxis } from "./benchmarkAxes.ts";
 import type { ModelCategory } from "./taxonomy.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -67,6 +68,14 @@ export type ModelTagEntry = {
    * evidence (see resolveBenchmark in the builder).
    */
   benchmarkOverlays?: Partial<Record<ModelCategory, { score: number; source: "seed" | "runtime"; basis: string }>>;
+  /**
+   * Harness Layer 3 (B1): multi-axis benchmark scores (SWE-bench, HumanEval,
+   * MATH-500, GPQA, MMLU, LMArena ELO — all normalized 0..100). Populated
+   * from the curated axis seed table for chat-registry models; absent means
+   * "no evidence on this axis", which axis queries never silently replace
+   * with the composite benchmark.
+   */
+  axes?: Partial<Record<BenchmarkAxis, { score: number; source: "seed" | "runtime"; basis: string }>>;
   contextLength?: number;
   tools: boolean;
   vision: boolean;
@@ -181,6 +190,19 @@ export function buildModelTagIndex(
           }
         }
       }
+      // Harness Layer 3 (B1): multi-axis scores (SWE-bench / HumanEval /
+      // MATH-500 / GPQA / MMLU / LMArena) from the curated axis seed table.
+      // Media-registry models skip this — those axes are LLM benchmarks.
+      const axisTarget = byFullId.get(id);
+      if (axisTarget) {
+        for (const axis of BENCHMARK_AXES) {
+          const seed = lookupAxisSeed(axis, { model: model.id, id });
+          if (seed) {
+            axisTarget.axes = axisTarget.axes ?? {};
+            axisTarget.axes[axis] = { score: seed.score, source: "seed", basis: seed.basis };
+          }
+        }
+      }
     }
   }
 
@@ -238,6 +260,15 @@ export type ModelTagQuery = {
   excludeProviders?: readonly string[];
   /** 0..100; entries without a benchmark never pass a > 0 threshold. */
   minBenchmark?: number;
+  /**
+   * Harness Layer 3 (B1): rank (and floor) on a benchmark AXIS instead of the
+   * composite category score — e.g. `axis: "swe_bench"` with
+   * `category: "coder"` ranks by SWE-bench evidence. Entries without a score
+   * on that axis keep "no evidence" semantics: they sort after axis-scored
+   * entries and never pass `minBenchmark > 0`. Absent `axis` = pre-B1
+   * behavior, byte-identical.
+   */
+  axis?: BenchmarkAxis;
   requireTools?: boolean;
   requireVision?: boolean;
   minContextLength?: number;
@@ -322,8 +353,26 @@ function entryBenchmarkFor(entry: ModelTagEntry, category?: ModelCategory): numb
   return entry.benchmark ? entry.benchmark.score : null;
 }
 
+/**
+ * Resolve the ranking/floor score for a query. With `query.axis` set (B1),
+ * ONLY the axis score counts — "no evidence on this axis" is never silently
+ * replaced by the composite benchmark (the two mean different things).
+ */
+function entryScoreForQuery(entry: ModelTagEntry, query: ModelTagQuery): number | null {
+  if (query.axis) {
+    return entry.axes?.[query.axis]?.score ?? null;
+  }
+  return entryBenchmarkFor(entry, query.category);
+}
+
 function matchesQuery(entry: ModelTagEntry, query: ModelTagQuery): boolean {
   if (query.category && !entry.categories.includes(query.category)) return false;
+  // Axis queries rank the whole CHAT registry — the axis is the
+  // discriminator, and name-inferred subcategories (coder/…) would hide
+  // flagship generalists that seed strongly on the axis. Media-registry
+  // models (image-gen, …) never carry axis scores, so they are excluded
+  // rather than sorting as noise after every scored entry.
+  if (query.axis && !entry.categories.includes("chat")) return false;
   if (query.provider && entry.provider !== query.provider) return false;
   if (query.providers && query.providers.length > 0 && !query.providers.includes(entry.provider))
     return false;
@@ -332,7 +381,7 @@ function matchesQuery(entry: ModelTagEntry, query: ModelTagQuery): boolean {
   if (query.requireVision && !entry.vision) return false;
   if (query.minContextLength && (entry.contextLength ?? 0) < query.minContextLength) return false;
   if (query.minBenchmark !== undefined && query.minBenchmark > 0) {
-    const score = entryBenchmarkFor(entry, query.category);
+    const score = entryScoreForQuery(entry, query);
     if (score === null || score < query.minBenchmark) return false;
   }
   return true;
@@ -344,8 +393,8 @@ function sortEntries(index: ModelTagIndex, query: ModelTagQuery): ModelTagEntry[
     : index.entries;
   const filtered = pool.filter((entry) => matchesQuery(entry, query));
   filtered.sort((a, b) => {
-    const scoreA = entryBenchmarkFor(a, query.category);
-    const scoreB = entryBenchmarkFor(b, query.category);
+    const scoreA = entryScoreForQuery(a, query);
+    const scoreB = entryScoreForQuery(b, query);
     if (scoreA !== scoreB) {
       if (scoreA === null) return 1; // unscored sorts last — "no evidence"
       if (scoreB === null) return -1;

@@ -22,6 +22,15 @@ export {
 } from "./taxonomy.ts";
 export type { ModelCategory } from "./taxonomy.ts";
 
+export {
+  BENCHMARK_AXES,
+  TASK_TYPES,
+  TASK_TYPE_TO_QUERY,
+  isBenchmarkAxis,
+  isTaskType,
+} from "./benchmarkAxes.ts";
+export type { AxisSeed, BenchmarkAxis, TaskType } from "./benchmarkAxes.ts";
+
 export { inferModelCategories } from "./inference.ts";
 export type { ModelCapabilityHints } from "./inference.ts";
 

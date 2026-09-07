@@ -47,6 +47,11 @@ tags:
     description: Unified web, news, and X search
   - name: Models
     description: Available model listing
+  - name: Harness
+    description: >-
+      Fork(harness) agent-facing surface — task classification and
+      capability-routed execution over the model tag index.
+
   - name: Providers
     description: Provider connection management
   - name: Provider Nodes
@@ -2064,6 +2069,177 @@ paths:
       responses:
         "200":
           description: API info
+
+  /api/v1/models/catalog:
+    get:
+      tags: [Models]
+      summary: Harness capability catalog (Layer 3)
+      description: >-
+        Fork(harness B1). Agent-facing retrieval over the model tag index:
+        every catalog model with categories, composite benchmark, per-axis
+        benchmark scores (swe_bench, humaneval, math500, gpqa, mmlu,
+        lmarena_elo), capability flags and context length. API-key policy
+        (not management auth). Filters: category, axis, providers,
+        minBenchmark, requireTools, requireVision, limit, offset.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+          required: false
+        - name: axis
+          in: query
+          schema:
+            type: string
+            enum: [mmlu, humaneval, swe_bench, math500, gpqa, lmarena_elo]
+          required: false
+        - name: providers
+          in: query
+          schema:
+            type: string
+          required: false
+        - name: minBenchmark
+          in: query
+          schema:
+            type: number
+          required: false
+        - name: requireTools
+          in: query
+          schema:
+            type: boolean
+          required: false
+        - name: requireVision
+          in: query
+          schema:
+            type: boolean
+          required: false
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+          required: false
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+          required: false
+      responses:
+        "200":
+          description: Capability catalog page
+        "400":
+          description: Invalid filter value
+        "401":
+          description: Unauthorized
+
+  /api/v1/models/best:
+    get:
+      tags: [Models]
+      summary: Best models for a task type (axis-ranked)
+      description: >-
+        Fork(harness B1). The allocator query: task uses the classifier
+        vocabulary (code, research, math, vision, search, chat, image_gen)
+        and maps through TASK_TYPE_TO_QUERY — the same mapping the classifier
+        output and capability aliases use. Ranking is axis-aware: code sorts
+        by SWE-bench, math by MATH-500, reasoning by GPQA, chat by LMArena
+        ELO. Raw form: category= plus optional axis=. Distinct models,
+        provider-diverse, with the task type's category fallback.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: task
+          in: query
+          schema:
+            type: string
+            enum: [code, research, math, reasoning, vision, search, chat, image_gen]
+          required: false
+        - name: category
+          in: query
+          schema:
+            type: string
+          required: false
+        - name: axis
+          in: query
+          schema:
+            type: string
+            enum: [mmlu, humaneval, swe_bench, math500, gpqa, lmarena_elo]
+          required: false
+        - name: minBenchmark
+          in: query
+          schema:
+            type: number
+          required: false
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 6
+          required: false
+      responses:
+        "200":
+          description: Ranked specialists for the task type
+        "400":
+          description: Missing/invalid task or category
+        "401":
+          description: Unauthorized
+
+  /api/v1/harness/classify:
+    post:
+      tags: [Harness]
+      summary: Classify a chat request without executing it
+      description: >-
+        Fork(harness B1). Stage-1 heuristics (free) classify the body into
+        type (code, research, math, vision, search, chat), complexity (fast,
+        deep) and detected modalities, plus the capability alias the harness
+        would route to. With useModel=true a cheap classifier call may
+        refine a low-confidence verdict; failures degrade to heuristics.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Task classification
+        "400":
+          description: Body lacks messages/prompt/input
+        "401":
+          description: Unauthorized
+
+  /api/v1/harness/task:
+    post:
+      tags: [Harness]
+      summary: Classify, route and execute a chat request in one call
+      description: >-
+        Fork(harness B1). The Gemini-style allocator as a single endpoint:
+        the body is classified, its model rewritten to the classification's
+        capability alias (a reserved name resolving to an ephemeral priority
+        combo over the tag index's best specialists, with native failover),
+        and executed on this server's /v1/chat/completions with the caller's
+        credentials. Streaming passes through verbatim. Query params:
+        alias= forces a route; classify_only=true returns the decision only.
+        Response carries X-Harness-Route and X-Harness-Tier headers.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Routed chat response (or decision with classify_only)
+        "400":
+          description: Invalid body
+        "401":
+          description: Unauthorized
 
   /api/v1/models:
     get:

@@ -663,5 +663,24 @@ export async function getComboForModel(modelStr) {
     // If the mappings table doesn't exist yet (pre-migration), continue gracefully
   }
 
+  // 3. Fork(parallel-execution) B1 — capability aliases: bare reserved words
+  // ("code", "vision", "reasoning", "math", "research", "search", "chat")
+  // resolve to an EPHEMERAL priority combo over the tag index's current best
+  // specialists for that capability. Runs after the DB lookups so operator
+  // combos always win, and only for bare names (a provider-prefixed
+  // "vendor/code" is an ordinary model). Returns null (fall through to
+  // normal model resolution) when the index has no candidate.
+  try {
+    const { buildCapabilityAliasCombo } = await import(
+      "@omniroute/open-sse/services/harness/capabilityAliases.ts"
+    );
+    const aliasCombo = buildCapabilityAliasCombo(baseModelStr || modelStr);
+    if (aliasCombo) {
+      return aliasCombo;
+    }
+  } catch {
+    // Tag index unavailable — fall through to ordinary resolution.
+  }
+
   return null;
 }
