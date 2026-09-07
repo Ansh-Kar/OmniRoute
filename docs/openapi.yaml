@@ -2186,6 +2186,69 @@ paths:
         "401":
           description: Unauthorized
 
+  /api/v1/orchestrate/jobs/{jobId}/judge:
+    post:
+      tags: [Harness]
+      summary: Trigger or advance the swarm consistency pass
+      description: >-
+        Fork(harness B3.5, Guide 1 Part 6). Swarm jobs only. Runs one judge
+        round in the background: verdicts are written to tasks.verdict and
+        failed parts re-queue with the verdict injected into their prompt
+        (up to policy.max_rounds, after which flaws are accepted and logged).
+        Optional body: {"kind": "consistency", "spec_key": "canon",
+        "check": "..."}. 409 while the job is still running; 400 for
+        non-swarm jobs; 404 unknown.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "202":
+          description: 'Judge advance accepted: {ok, job_id, status: active}'
+        "400":
+          description: Not a swarm job
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown job
+        "409":
+          description: Job still running
+
+  /api/v1/orchestrate/jobs/{jobId}/blackboard:
+    get:
+      tags: [Harness]
+      summary: Swarm blackboard — snapshot plus append history
+      description: >-
+        Fork(harness B3.5, Guide 1 Part 6). Current blackboard snapshot
+        (harness-written only: worker summaries and mailbox answers; locked
+        keys in _locked are never worker-touched) plus the history of
+        appends — who wrote what, in order.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: '{job_id, blackboard, history[]}'
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown job
+
   /api/v1/orchestrate/plan:
     post:
       tags: [Harness]

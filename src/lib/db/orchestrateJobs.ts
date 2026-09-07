@@ -71,6 +71,12 @@ export function ensureOrchestrateTables(): void {
     CREATE INDEX IF NOT EXISTS orchestrate_job_log_job
       ON orchestrate_job_log(job_id, id);
   `);
+  // judge_rounds landed with B3.5; existing installs self-heal via ALTER.
+  try {
+    db.exec(`ALTER TABLE orchestrate_jobs ADD COLUMN judge_rounds INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    // Column already present.
+  }
   ensured = true;
 }
 
@@ -105,6 +111,7 @@ function jobFromRow(row: any, tasks: OrchestrateTask[], log: OrchestrateLogEntry
     idempotencyKey: row.idempotency_key ?? null,
     createdAt: row.created_at,
     deadlineAt: row.deadline_at,
+    judgeRounds: typeof row.judge_rounds === "number" ? row.judge_rounds : 0,
     tasks,
     log,
   };
@@ -205,6 +212,7 @@ export class SqliteJobsStore {
     const values: unknown[] = [];
     const columns: Array<[keyof OrchestrateTask, string]> = [
       ["state", "state"],
+      ["prompt", "prompt"],
       ["attempts", "attempts"],
       ["wave", "wave"],
       ["assignedModel", "assigned_model"],
@@ -239,6 +247,21 @@ export class SqliteJobsStore {
       failureReason,
       jobId
     );
+  }
+
+  updateBlackboard(jobId: string, blackboard: Record<string, unknown> | null): void {
+    ensureOrchestrateTables();
+    const db = getDbInstance();
+    db.prepare(`UPDATE orchestrate_jobs SET blackboard = ? WHERE job_id = ?`).run(
+      blackboard ? JSON.stringify(blackboard) : null,
+      jobId
+    );
+  }
+
+  setJudgeRounds(jobId: string, rounds: number): void {
+    ensureOrchestrateTables();
+    const db = getDbInstance();
+    db.prepare(`UPDATE orchestrate_jobs SET judge_rounds = ? WHERE job_id = ?`).run(rounds, jobId);
   }
 
   appendLog(entry: Omit<OrchestrateLogEntry, "timestamp">, timestamp: number): void {

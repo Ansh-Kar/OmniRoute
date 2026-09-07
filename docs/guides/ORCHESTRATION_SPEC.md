@@ -21,8 +21,8 @@
 - [x] Part 3 — Jobs store & state machine — *shipped in B3 (orchestrate_jobs/tasks/job_log; queued→running→done|failed, attempts cap, per-transition audit log; expired-lease requeue/work-stealing + A2A remain B3.5)*
 - [ ] Part 4 — Allocator (tags → provider-diverse assignment) — *static axis-ranked core shipped in B1 (capability aliases); health × speed × breaker multipliers land with the jobs store (B3) per Part 8*
 - [x] Part 5 — Planner (DAG waves) — *shipped in B3 (topological readiness, parallel wave fire with max_concurrency, upstream injection truncated to 800 chars, failed deps block)*
-- [ ] Part 6 — Orchestrator API (`/v1/orchestrate/*`) — *`/quick` ✅ B2; `/plan` + `GET /jobs/{id}?wait=` ✅ B3; blackboard + judge endpoints are B3.5*
-- [ ] Part 7 — Swarm manager (blackboard + A2A + judge loop) — *B3, builds on the shipped `strategy: "swarm"` combo engine*
+- [x] Part 6 — Orchestrator API (`/v1/orchestrate/*`) — *all shipped: `/quick` B2; `/plan` + `GET /jobs/{id}?wait=` B3; `POST /jobs/{id}/judge` + `GET /jobs/{id}/blackboard` B3.5*
+- [x] Part 7 — Swarm manager (blackboard + A2A + judge loop) — *shipped in B3.5: shared-context prompt wrapping, harness-parsed summaries with locked keys, bounded @ask relay (adapted: stateless workers → one relayed question per wave, answer to the blackboard), judge loop with verdict requeue + max_rounds flaw acceptance*
 - [ ] Part 8 — Scoring integration & telemetry — *drift loop in B3/B5+*
 - [ ] Part 9 — Build order & acceptance tests — *followed; step 1 (tags) done*
 

@@ -27,6 +27,18 @@
  */
 
 import { isTaskType, TASK_TYPES, type TaskType } from "../modelTags/index.ts";
+import {
+  appendMailboxAnswer,
+  assembleSwarmPrompt,
+  buildAskPrompt,
+  buildJudgeMessages,
+  MAILBOX_TIMEOUT_MS,
+  mergeIntoBlackboard,
+  parseAskDirectives,
+  parseJudgeVerdicts,
+  parseSummary,
+  withJudgeFeedback,
+} from "./swarmMode.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -43,6 +55,8 @@ export type OrchestratePolicy = {
   max_concurrency?: number; // default 8 (wave parallelism)
   deadline_s?: number; // default 600
   task_timeout_ms?: number; // default 120000
+  judge?: boolean; // swarm mode: run the judge loop (default true)
+  max_rounds?: number; // swarm mode: judge refinement cap (1-5, default 3)
 };
 
 export type OrchestratePlanBody = {
@@ -84,6 +98,8 @@ export type OrchestrateJob = {
   idempotencyKey: string | null;
   createdAt: number;
   deadlineAt: number;
+  /** Judge passes completed (swarm mode; hard cap = policy.max_rounds). */
+  judgeRounds: number;
   tasks: OrchestrateTask[];
   log: OrchestrateLogEntry[];
 };
@@ -101,6 +117,7 @@ export const ORCHESTRATE_DEFAULTS = {
   maxConcurrency: 8,
   deadlineS: 600,
   taskTimeoutMs: 120_000,
+  maxRounds: 3,
 } as const;
 
 /** Guide 1 Part 9 acceptance uses 6-task plans; the swarm #1905 cap is 40. */
@@ -118,9 +135,12 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
 
   const mode = body.mode === "swarm" ? "swarm" : body.mode === "parallel" || body.mode == null ? "parallel" : null;
   if (mode === null) errors.push(`mode must be "parallel" or "swarm" (got "${body.mode}")`);
-  if (mode === "swarm") {
-    // Validated and accepted as a plan shape, but execution lands in B3.5.
-    errors.push('mode "swarm" (blackboard + judge loop) lands in the next build — use "parallel" for now');
+  if (mode === "swarm" && body.blackboard && typeof body.blackboard === "object" && Array.isArray(body.blackboard._locked)) {
+    // Locked keys must exist on the blackboard — a lock on a missing key is
+    // a plan bug the brain should fix before submission.
+    for (const key of body.blackboard._locked as string[]) {
+      if (!(key in body.blackboard)) errors.push(`blackboard._locked references missing key "${key}"`);
+    }
   }
 
   const goal = typeof body.goal === "string" ? body.goal : "";
@@ -201,6 +221,8 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
     max_concurrency: clampInt(rawPolicy.max_concurrency, 1, 16, ORCHESTRATE_DEFAULTS.maxConcurrency),
     deadline_s: clampInt(rawPolicy.deadline_s, 1, 86_400, ORCHESTRATE_DEFAULTS.deadlineS),
     task_timeout_ms: clampInt(rawPolicy.task_timeout_ms, 1_000, 600_000, ORCHESTRATE_DEFAULTS.taskTimeoutMs),
+    judge: rawPolicy.judge !== false,
+    max_rounds: clampInt(rawPolicy.max_rounds, 1, 5, ORCHESTRATE_DEFAULTS.maxRounds),
   };
   return {
     ok: true,
@@ -287,6 +309,10 @@ export interface JobsStore {
   /** Write a terminal or requeue transition. Returns the updated task. */
   writeTaskTransition(jobId: string, taskId: string, patch: Partial<OrchestrateTask>): Promise<OrchestrateTask | null> | OrchestrateTask | null;
   setJobStatus(jobId: string, status: JobStatus, failureReason: string | null): Promise<void> | void;
+  /** Swarm: replace the blackboard snapshot (harness-only writes). */
+  updateBlackboard(jobId: string, blackboard: Record<string, unknown> | null): Promise<void> | void;
+  /** Swarm: persist the judge-round counter. */
+  setJudgeRounds(jobId: string, rounds: number): Promise<void> | void;
   appendLog(entry: Omit<OrchestrateLogEntry, "timestamp">, timestamp: number): Promise<void> | void;
 }
 
@@ -349,6 +375,16 @@ export class InMemoryJobsStore implements JobsStore {
     }
   }
 
+  updateBlackboard(jobId: string, blackboard: Record<string, unknown> | null): void {
+    const job = this.jobs.get(jobId);
+    if (job) job.blackboard = blackboard;
+  }
+
+  setJudgeRounds(jobId: string, rounds: number): void {
+    const job = this.jobs.get(jobId);
+    if (job) job.judgeRounds = rounds;
+  }
+
   appendLog(entry: Omit<OrchestrateLogEntry, "timestamp">, timestamp: number): void {
     const job = this.jobs.get(entry.jobId);
     if (job) job.log.push({ ...entry, timestamp });
@@ -362,9 +398,13 @@ export class InMemoryJobsStore implements JobsStore {
 // ── Runner (wave loop) ──────────────────────────────────────────────────────
 
 export type TaskDispatch = (input: {
+  taskId: string;
   tag: TaskType;
   alias: string;
+  /** Chat-shaped messages (upstream-injected; swarm-wrapped for chat tags). */
   messages: Array<{ role: string; content: string }>;
+  /** The effective prompt (what an images dispatch should send). */
+  prompt: string;
   timeoutMs: number;
 }) => Promise<
   | { ok: true; text: string; model: string | null; provider: string | null }
@@ -376,30 +416,146 @@ export type RunnerDeps = {
   dispatch: TaskDispatch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Swarm: override the judge pass's check instruction (manual advance). */
+  judgeCheck?: string;
 };
 
 export function aliasForTag(tag: TaskType, budget: string): string {
-  return tag === "image_gen" ? "chat" : budget === "any" ? tag : `${tag}:${budget}`;
+  if (tag === "image_gen") return "image_gen"; // resolved by the images adapter
+  return budget === "any" ? tag : `${tag}:${budget}`;
 }
 
-const LEASE_MS = 300_000; // leases cover a wave; expiry requeue is B3.5
+const LEASE_MS = 300_000; // leases cover a wave; expiry requeue is B5+
+
+type LogFn = (taskId: string | null, event: string, detail?: string | null) => void;
+
+/** Wrap a chat task's prompt with the swarm shared context (image tasks skip it). */
+function effectivePrompt(
+  job: OrchestrateJob,
+  task: OrchestrateTask,
+  byId: Map<string, OrchestrateTask>
+): string {
+  if (job.mode !== "swarm" || task.tag === "image_gen") {
+    // Parallel mode / image tasks: upstream injection only.
+    const messages = buildTaskMessages(task, byId);
+    return messages[0].content;
+  }
+  const partCount = job.tasks.length;
+  const partIndex = job.tasks.findIndex((candidate) => candidate.id === task.id) + 1;
+  const base = buildTaskMessages(task, byId)[0].content;
+  return assembleSwarmPrompt({ goal: job.goal, blackboard: job.blackboard }, { id: task.id, prompt: base }, partIndex, partCount);
+}
 
 /**
- * Execute a job to completion (or deadline). Wave loop: compute the ready
- * set, fire it with bounded parallelism, write transitions, repeat. Never
- * throws — every failure becomes a logged transition; the job ends done,
- * failed(reason), or failed(deadline) with partial results intact.
+ * Execute a job to completion: waves (parallel fire, requeue, deadline),
+ * then — for swarm mode — the judge loop: verdicts requeue failures with
+ * feedback until clean or policy.max_rounds, after which flaws are accepted
+ * and logged. Never throws; every step is a logged transition.
  */
 export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
   const { store, dispatch } = deps;
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const log = (taskId: string | null, event: string, detail: string | null = null) =>
+  const log: LogFn = (taskId, event, detail = null) =>
     void Promise.resolve(store.appendLog({ jobId, taskId, event, detail }, now()));
 
-  const job = await Promise.resolve(store.getJob(jobId));
-  if (!job || job.status !== "active") return;
-  const policy = job.policy;
+  const initial = await Promise.resolve(store.getJob(jobId));
+  if (!initial || initial.status !== "active") return;
+
+  for (;;) {
+    // ── Phase 1: waves until every task is terminal ──
+    await runWaves(jobId, deps, log);
+
+    const job = await Promise.resolve(store.getJob(jobId));
+    if (!job) return;
+    if (job.status !== "active") return; // deadline/blocked already decided
+
+    // ── Phase 2: judge loop (swarm mode only) ──
+    if (job.mode !== "swarm" || !job.policy.judge) {
+      await finalize(job, store, log);
+      return;
+    }
+    if (now() >= job.deadlineAt) {
+      await Promise.resolve(store.setJobStatus(jobId, "failed", "deadline"));
+      log(null, "job_deadline", "deadline exceeded before the judge pass");
+      return;
+    }
+    if (job.judgeRounds >= job.policy.max_rounds) {
+      await acceptWithFlaws(job, store, log, "judge rounds exhausted");
+      return;
+    }
+
+    await Promise.resolve(store.setJobStatus(jobId, "judging", null));
+    const round = job.judgeRounds + 1;
+    log(null, "judge_start", `round ${round} of ${job.policy.max_rounds}`);
+
+    const judgeInput = buildJudgeMessages(job, { check: deps.judgeCheck });
+    let judgeText: string | null = null;
+    try {
+      const outcome = await dispatch({
+        taskId: "__judge",
+        tag: judgeInput.tag,
+        alias: aliasForTag(judgeInput.tag, job.policy.budget),
+        messages: judgeInput.messages,
+        prompt: judgeInput.messages[0].content,
+        timeoutMs: job.policy.task_timeout_ms,
+      });
+      if (outcome.ok) judgeText = outcome.text;
+    } catch {
+      judgeText = null;
+    }
+    const verdicts = judgeText !== null ? parseJudgeVerdicts(judgeText) : null;
+    if (!verdicts) {
+      log(null, "judge_unparseable", "judge output could not be parsed; accepting parts as-is");
+      await finalize(job, store, log);
+      return;
+    }
+
+    const byId = new Map(job.tasks.map((task) => [task.id, task]));
+    const failures = verdicts.filter((verdict) => {
+      const task = byId.get(verdict.task_id);
+      return task && task.state === "done" && !verdict.pass;
+    });
+    log(null, "judge_verdicts", `${verdicts.filter((v) => v.pass).length} pass, ${failures.length} fail`);
+
+    // The round counts as soon as the pass produced verdicts — clean or not.
+    await Promise.resolve(store.setJudgeRounds(jobId, round));
+
+    if (failures.length === 0) {
+      await finalize(job, store, log);
+      return;
+    }
+
+    if (round >= job.policy.max_rounds) {
+      // Guide Part 7.4: the last round's output is accepted with flaws
+      // recorded in the job log — refinement hard-stops.
+      await acceptWithFlaws(await Promise.resolve(store.getJob(jobId)) as OrchestrateJob, store, log, "max_rounds reached");
+      return;
+    }
+
+    for (const failure of failures) {
+      const task = byId.get(failure.task_id) as OrchestrateTask;
+      await Promise.resolve(
+        store.writeTaskTransition(jobId, task.id, {
+          state: "queued",
+          attempts: 0,
+          prompt: withJudgeFeedback(task.prompt, failure.note, round),
+          verdict: failure.note,
+          result: null,
+        })
+      );
+      log(task.id, "judge_requeued", failure.note);
+    }
+    await Promise.resolve(store.setJobStatus(jobId, "active", null));
+    // Loop: the failed parts re-run with the verdict injected.
+  }
+}
+
+/** Wave loop until all tasks are terminal, the job leaves active, or the deadline hits. */
+async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<void> {
+  const { store, dispatch } = deps;
+  const now = deps.now ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let wave = 0;
 
   for (;;) {
@@ -415,14 +571,9 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
     const plan = nextWave(current.tasks);
     const incomplete = current.tasks.filter((task) => task.state !== "done" && task.state !== "failed");
     if (plan.ready.length === 0) {
-      if (incomplete.length === 0) {
-        const failed = current.tasks.filter((task) => task.state === "failed");
-        await Promise.resolve(store.setJobStatus(jobId, "done", failed.length > 0 ? `${failed.length} task(s) failed` : null));
-        log(null, "job_done", failed.length > 0 ? `completed with failed tasks: ${failed.map((t) => t.id).join(", ")}` : null);
-      } else {
-        await Promise.resolve(store.setJobStatus(jobId, "failed", "blocked"));
-        log(null, "job_blocked", plan.blocked.map((b) => `${b.id} (${b.reason})`).join("; "));
-      }
+      if (incomplete.length === 0) return; // all terminal — judge phase decides
+      await Promise.resolve(store.setJobStatus(jobId, "failed", "blocked"));
+      log(null, "job_blocked", plan.blocked.map((b) => `${b.id} (${b.reason})`).join("; "));
       return;
     }
 
@@ -430,10 +581,11 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
     const byId = new Map(current.tasks.map((task) => [task.id, task]));
     log(null, "wave_start", `wave ${wave}: ${plan.ready.join(", ")}`);
 
-    const executing = plan.ready.slice(0, policy.max_concurrency);
+    const executing = plan.ready.slice(0, current.policy.max_concurrency);
     const deferred = plan.ready.length - executing.length;
-    if (deferred > 0) log(null, "wave_deferred", `${deferred} task(s) deferred to the next wave (max_concurrency ${policy.max_concurrency})`);
+    if (deferred > 0) log(null, "wave_deferred", `${deferred} task(s) deferred (max_concurrency ${current.policy.max_concurrency})`);
 
+    const waveResults: Array<{ taskId: string; text: string }> = [];
     await Promise.all(
       executing.map(async (taskId) => {
         const task = byId.get(taskId);
@@ -442,18 +594,26 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
         if (!leased) return;
         log(taskId, "task_start", `attempt ${task.attempts + 1}`);
 
-        const messages = buildTaskMessages(task, byId);
-        const alias = aliasForTag(task.tag, policy.budget);
+        const prompt = effectivePrompt(current, task, byId);
+        const alias = aliasForTag(task.tag, current.policy.budget);
         const started = now();
         let outcome: Awaited<ReturnType<TaskDispatch>>;
         try {
-          outcome = await dispatch({ tag: task.tag, alias, messages, timeoutMs: policy.task_timeout_ms });
+          outcome = await dispatch({
+            taskId,
+            tag: task.tag,
+            alias,
+            messages: [{ role: "user", content: prompt }],
+            prompt,
+            timeoutMs: current.policy.task_timeout_ms,
+          });
         } catch (error) {
           outcome = { ok: false, error: error instanceof Error ? error.message : "dispatch threw" };
         }
         const latency = now() - started;
 
         if (outcome.ok) {
+          waveResults.push({ taskId, text: outcome.text });
           await Promise.resolve(
             store.writeTaskTransition(jobId, taskId, {
               state: "done",
@@ -468,7 +628,7 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
           log(taskId, "task_done", `${latency}ms via ${outcome.model ?? alias}`);
         } else {
           const attempts = task.attempts + 1;
-          if (attempts >= policy.max_attempts) {
+          if (attempts >= current.policy.max_attempts) {
             await Promise.resolve(
               store.writeTaskTransition(jobId, taskId, { state: "failed", attempts, wave, lastError: outcome.error })
             );
@@ -481,9 +641,86 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
       })
     );
 
-    // Let a concurrent wave loop (or test) observe the transition.
+    // ── Post-wave swarm bookkeeping: blackboard + bounded mailbox ──
+    if (current.mode === "swarm" && waveResults.length > 0) {
+      const appends = waveResults.map(({ taskId, text }) => ({ taskId, summary: parseSummary(text) }));
+      const merged = mergeIntoBlackboard(current.blackboard, appends);
+      await Promise.resolve(store.updateBlackboard(jobId, merged));
+      for (const append of appends) {
+        log(append.taskId, "blackboard_append", truncateLog(append.summary));
+      }
+
+      // Bounded A2A: one question per worker per wave, relayed by the harness
+      // (30s timeout; unanswered → the asker proceeds with a note).
+      const asked = new Set<string>();
+      for (const { taskId, text } of waveResults) {
+        if (asked.has(taskId)) continue;
+        const directives = parseAskDirectives(taskId, text);
+        if (directives.length === 0) continue;
+        const ask = directives[0];
+        // Fresh state: the target may have completed in THIS wave (the
+        // pre-wave snapshot would still show it queued).
+        const fresh = await Promise.resolve(store.getJob(jobId));
+        const target = fresh?.tasks.find((task) => task.id === ask.to);
+        if (!target || target.state !== "done") {
+          log(taskId, "mailbox_skipped", `@ask target "${ask.to}" has no completed output`);
+          continue;
+        }
+        asked.add(taskId);
+        const answer = await relayQuestion(jobId, ask, target, deps, log);
+        const updated = await Promise.resolve(store.getJob(jobId));
+        const withAnswer = appendMailboxAnswer(updated?.blackboard ?? null, { from: ask.from, to: ask.to, question: ask.question, answer });
+        await Promise.resolve(store.updateBlackboard(jobId, withAnswer));
+        log(taskId, "mailbox_relayed", `to ${ask.to}: ${truncateLog(answer)}`);
+      }
+    }
+
     await sleep(0);
   }
+}
+
+async function relayQuestion(
+  jobId: string,
+  ask: { from: string; to: string; question: string },
+  target: OrchestrateTask,
+  deps: RunnerDeps,
+  log: LogFn
+): Promise<string> {
+  const { dispatch } = deps;
+  try {
+    const outcome = await dispatch({
+      taskId: `__mailbox_${ask.from}`,
+      tag: target.tag,
+      alias: aliasForTag(target.tag, "any"),
+      messages: [{ role: "user", content: buildAskPrompt(ask, target) }],
+      prompt: buildAskPrompt(ask, target),
+      timeoutMs: MAILBOX_TIMEOUT_MS,
+    });
+    if (outcome.ok) return outcome.text.trim().slice(0, 2000);
+    return "(unanswered — proceed with a note)";
+  } catch {
+    log(ask.from, "mailbox_timeout", `question to ${ask.to} went unanswered`);
+    return "(unanswered — proceed with a note)";
+  }
+}
+
+function truncateLog(text: string): string {
+  return text.length <= 200 ? text : `${text.slice(0, 200)}…`;
+}
+
+async function finalize(job: OrchestrateJob, store: JobsStore, log: LogFn): Promise<void> {
+  const failed = job.tasks.filter((task) => task.state === "failed");
+  await Promise.resolve(store.setJobStatus(job.jobId, "done", failed.length > 0 ? `${failed.length} task(s) failed` : null));
+  log(null, "job_done", failed.length > 0 ? `completed with failed tasks: ${failed.map((t) => t.id).join(", ")}` : null);
+}
+
+async function acceptWithFlaws(job: OrchestrateJob, store: JobsStore, log: LogFn, reason: string): Promise<void> {
+  const flawed = job.tasks.filter((task) => task.verdict && task.state === "done");
+  await Promise.resolve(store.setJobStatus(job.jobId, "done", flawed.length > 0 ? `accepted with judge flaws (${reason})` : null));
+  for (const task of flawed) {
+    log(task.id, "task_flaw_accepted", task.verdict as string);
+  }
+  log(null, "job_done", `judge refinement hard-stopped: ${reason}`);
 }
 
 /** Serialize a job for the jobs API (Guide 1 Part 6 shape). */
@@ -500,6 +737,8 @@ export function jobToApi(job: OrchestrateJob): Record<string, unknown> {
     goal: job.goal,
     mode: job.mode,
     failure_reason: job.failureReason,
+    judge_rounds: job.judgeRounds,
+    blackboard: job.blackboard ?? null,
     waves: [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([n, tasks]) => ({ n, tasks })),
     tasks: job.tasks.map((task) => ({
       id: task.id,

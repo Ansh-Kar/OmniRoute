@@ -299,3 +299,59 @@ GET /v1/orchestrate/jobs/{id}?wait=30 → status, waves, tasks, log tail
 | Task exhausted attempts | task `failed`; dependents stay `queued`; job `done` (with `failure_reason`) when others finished, `failed("blocked")` when nothing can run |
 | Deadline exceeded | job `failed("deadline")`, finished results readable, queued tasks untouched |
 | Plan invalid | `400` with per-task errors (one corrected re-emit) |
+
+## B3.5 — swarm mode (Guide 1 Part 7)
+
+`mode: "swarm"` now executes: blackboard, bounded A2A relay, and the judge
+loop, on top of the B3 wave engine.
+
+### Blackboard (guide Part 7.1–7.2)
+
+Swarm workers' prompts are wrapped with a `<shared context>`: the goal, the
+blackboard snapshot (locked keys marked `[LOCKED]`), part identity, and the
+output contract — end with a `<summary>` block of ≤15 lines. The HARNESS
+parses those summaries and merges them under `blackboard.summaries.<taskId>`;
+workers never write anything else, and `_locked` keys are untouchable
+(validation even rejects plans that lock missing keys). `GET
+/v1/orchestrate/jobs/{id}/blackboard` returns the snapshot plus the append
+history (who wrote what, in order).
+
+### Bounded A2A relay (guide Part 7.3, adapted)
+
+Workers are stateless one-shot dispatches, so free-form mid-wave chat is
+replaced by its bounded equivalent: a worker may emit ONE
+`@ask <task-id>: <question>` line per wave; the harness relays it as a
+single ≤30s dispatch to the asked worker's specialty, and the answer lands
+on `blackboard.mailbox` — the asker (or the judge) reads it from the shared
+state on the next round. Unanswered → `"(unanswered — proceed with a note)"`.
+Context drift, token burn, and unbounded loops are avoided by construction.
+
+### Judge loop (guide Part 7.4 + Part 6)
+
+After the waves complete, the job enters `judging`: a judge pass (the
+`plan` alias — `vision` for image jobs) reviews every part's summary
+against the locked canon (or a caller-supplied check) and returns strict
+JSON verdicts. Failed parts re-queue with the verdict injected into their
+prompt (`[judge feedback, round N: …]`, attempts reset); clean passes end
+the job `done`. `policy.max_rounds` (default 3, capped 5) hard-stops
+refinement — the last round's output is **accepted with flaws recorded** in
+the job log (`task_flaw_accepted`). Unparseable judge output never
+fabricates a clean verdict: the parts are accepted as-is and the anomaly
+logged. `POST /v1/orchestrate/jobs/{id}/judge` manually triggers or
+advances a pass (409 while running).
+
+### Per-task media dispatch
+
+`image_gen` tasks now dispatch the images API with the tag index's best
+image specialist (previously routed via the chat alias). Image models skip
+the `<shared context>` wrapper (they cannot follow it) and receive the raw
+prompt with upstream notes; their results are stored as image JSON with the
+summary falling back to the raw output.
+
+### Failure semantics additions (guide Part 7, swarm)
+
+| Behind the scenes | API says |
+|---|---|
+| Judge round failed a part, re-ran, clean | normal `done`; `verdict` + `judge_rounds` visible |
+| Judge keeps failing a part until max_rounds | `done` with `failure_reason: accepted with judge flaws…`; `task_flaw_accepted` in the log |
+| @ask went unanswered | mailbox note on the blackboard; work proceeds |

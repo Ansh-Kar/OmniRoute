@@ -197,6 +197,40 @@ B3.5). See `docs/guides/HARNESS.md` §B3:
   conflict, API shape). services 429/429, openapi 702 paths / 99.3%,
   typecheck:core clean.
 
+### 5d. Harness B3.5 — swarm mode (`feat(harness)`, Guide 1 Part 7)
+
+Blackboard, bounded A2A relay, and the judge loop on the B3 wave engine
+(see `docs/guides/HARNESS.md` §B3.5):
+
+- **Blackboard** — swarm prompts wrapped with `<shared context>` (goal,
+  snapshot, `[LOCKED]` markers, part identity, output contract: a ≤15-line
+  `<summary>` block); the HARNESS parses summaries into
+  `blackboard.summaries.<taskId>` — workers never write the board, locked
+  keys untouchable (plans locking missing keys are rejected at admission).
+  `GET /v1/orchestrate/jobs/{id}/blackboard` = snapshot + append history.
+- **Bounded A2A relay** — one `@ask <task-id>: <question>` per worker per
+  wave, relayed by the harness as a single ≤30s dispatch to the asked
+  worker's specialty; the answer lands on `blackboard.mailbox`. Stateless
+  workers keep the guide's failure modes (drift/burn/loops) avoided by
+  construction.
+- **Judge loop** — after the waves, status `judging`: a `plan`-tagged
+  (image jobs: `vision`) judge reviews summaries against the locked canon
+  or a caller check, strict-JSON verdicts; failed parts re-queue with
+  `[judge feedback, round N]` injected (attempts reset); `max_rounds`
+  (default 3, cap 5) hard-stops refinement — final output accepted with
+  flaws logged (`task_flaw_accepted`). Unparseable verdicts never
+  fabricate a clean pass. `POST /jobs/{id}/judge` for manual advance.
+- **Per-task media dispatch** — `image_gen` tasks dispatch the images API
+  with the tag index's top image specialist (no chat-alias detour);
+  image models skip the shared-context wrapper.
+- Tests: `tests/unit/services/harness-b35.test.ts` (14 — prompt assembly,
+  summary/merge with locked keys, @ask parsing + relay + degradation,
+  judge input/vision-tag/parsing, runner e2e: blackboard fill + clean
+  pass, requeue-with-feedback, max_rounds flaw acceptance, mailbox answer
+  + unanswered note, image-task raw prompt). Combined harness suites
+  55/55; services 443/443; openapi 704 paths / 99.3%; typecheck:core
+  clean.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

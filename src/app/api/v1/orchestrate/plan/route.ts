@@ -24,7 +24,10 @@ import { jobToApi, runJob } from "@omniroute/open-sse/services/harness/orchestra
  * duplicate ids, dangling depends_on, cycles, empty tasks → 400 with
  * per-task errors — the brain re-emits the plan once, corrected.
  * Idempotency-Key replays return the ORIGINAL job without re-executing.
- * mode "swarm" (blackboard + judge loop) lands in B3.5.
+ * mode "swarm" (B3.5): prompts are wrapped with the shared blackboard
+ * context, worker summaries merge back (locked keys protected), bounded
+ * @ask questions are relayed, and a judge pass re-queues inconsistent
+ * parts with feedback up to policy.max_rounds — then accepts with flaws.
  */
 
 const store = new SqliteJobsStore();

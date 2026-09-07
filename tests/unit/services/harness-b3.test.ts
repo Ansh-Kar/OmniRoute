@@ -55,6 +55,7 @@ function makeJob(overrides: Partial<OrchestrateJob> = {}): OrchestrateJob {
     status: "active",
     failureReason: null,
     idempotencyKey: null,
+    judgeRounds: 0,
     createdAt: now,
     deadlineAt: now + validation.policy.deadline_s * 1000,
     tasks: validation.tasks.map((task) => ({
@@ -105,7 +106,7 @@ test("plan: admission errors are per-task and specific", () => {
     [{ ...planBody(), tasks: [{ id: "t1", tag: "code", prompt: "x" }, { id: "t1", tag: "code", prompt: "y" }] }, "duplicate task id"],
     [{ ...planBody(), tasks: [{ id: "t1", tag: "code", prompt: "x", depends_on: ["ghost"] }] }, "unknown task \"ghost\""],
     [{ ...planBody(), tasks: [{ id: "t1", tag: "code", prompt: "x", depends_on: ["t2"] }, { id: "t2", tag: "code", prompt: "y", depends_on: ["t1"] }] }, "cycle"],
-    [{ ...planBody(), mode: "swarm" }, "swarm"],
+
     [{ ...planBody(), goal: " " }, "goal"],
   ];
   for (const [body, needle] of cases) {
@@ -276,7 +277,7 @@ test("runner: alias mapping respects the job budget and image_gen", () => {
   assert.equal(aliasForTag("code", "any"), "code");
   assert.equal(aliasForTag("code", "best"), "code:best");
   assert.equal(aliasForTag("plan", "cheap"), "plan:cheap");
-  assert.equal(aliasForTag("image_gen", "any"), "chat", "image tasks route via chat in B3");
+  assert.equal(aliasForTag("image_gen", "any"), "image_gen", "resolved by the images adapter (B3.5)");
 });
 
 test("runner: jobToApi exposes waves, tasks, and the log tail", async () => {
