@@ -423,3 +423,63 @@ Lease expiry/work-stealing and allocator health multipliers consume the same
 per-connection state the NIM tracker introduces; vision-judge pixel review
 consumes the image dispatch path; the drift loop (Guide 1 Part 8) scores the
 tier decisions `?tier=auto` now makes.
+
+## B5 — the allocator (Guide 1 Parts 4 + 8, lease expiry)
+
+Three pieces: live score-based assignment, the judge drift loop, and
+lease-expiry/work-stealing.
+
+### Allocator scoring (Part 8 formula, `harness/allocator.ts`)
+
+```
+score = quality[tag]                  # static prior (tag index axis/benchmark)
+      × (0.5 + 0.5 × health)          # Laplace-smoothed success rate
+      × (0.5 + 0.5 × speed)           # decay vs latency average (3s baseline)
+      × breaker_penalty               # 0.2 when open (feed is future work)
+```
+
+Health/speed come from the jobs store's own task outcomes
+(`aggregateModelStats` — successes/failures/latency per served model across
+ALL jobs), not a parallel telemetry system. No history is neutral (×0.75
+for everyone); drift penalties subtract from quality with the guide's 0.3
+floor. Pure module — allocation is a deterministic function of
+(candidates, stats, penalties, policy).
+
+### Assigned routing (`policy.routing: "assigned"`)
+
+The default (`"alias"`) keeps B1 behavior: dispatch the capability alias and
+let the native combo machinery fail over. With `"assigned"`, each wave runs
+`assignModels` — provider-diverse water-filling (best of A, best of B, then
+second of A…), preferring unused models, capped by
+`policy.max_per_provider` (default 3) — and dispatches the literal picked
+model (`task_assigned` logged with model + score). Unassignable tasks fall
+back to the alias, logged (`assign_fallback_alias`) — never a silent
+dead-end. Task failures requeue (existing machinery), and the next wave's
+allocator sees the failed model's degraded health — the reroute is
+automatic. Image tasks honor assignments too.
+
+### Judge drift loop (Part 8)
+
+Every judge verdict writes back per served model: two consecutive failed
+verdicts → quality −0.05 per further fail (total penalty capped so quality
+never drops below 0.3), `model_drift_penalty` logged. Passes reset the
+streak; penalties persist. Drift counts per VERDICT, so a model serving
+several failed parts drifts proportionally. Penalties feed the next
+assigned-routing wave's allocator and survive restarts (SQLite table
+`orchestrate_model_drift`; in-memory map for embedders).
+
+### Lease expiry + work-stealing (Part 3 completion)
+
+Tasks now carry `lease_until`. A wave's lease is
+`max(5 min, task_timeout + 30s)`; a second runner inside the window is
+rejected, but an EXPIRED running lease is stealable (worker died → takeover).
+Each wave sweeps expired leases first: lost tasks are requeued
+(`lease_expired` logged, attempts preserved) and re-dispatched by the next
+wave — Part 9 acceptance "lease expiry requeues" is now a tested behavior
+in both stores.
+
+### What builds on this (B6+)
+
+The breaker feed (0.2 multiplier) plugs into `scoreCandidate` when
+connection-level breaker state is exposed to the orchestrator; the drift
+loop already provides the quality side of the Guide 1 Part 8 loop.

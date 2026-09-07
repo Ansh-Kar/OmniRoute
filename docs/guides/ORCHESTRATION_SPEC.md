@@ -18,13 +18,13 @@
 ## Status Tracker
 - [x] Part 1 — Architecture overview & integration points — *honored by B1: aliases and `/v1/harness/task` execute through the existing routing path (`getComboForModel` → native combo machinery), never around it*
 - [x] Part 2 — Tag taxonomy (shared contract) — *shipped in B1 @ `056cc85ce` as the finer-grained vocabulary `code | research | math | reasoning | vision | search | chat | image_gen` with benchmark axes; the guide's 6-string Hermes contract is a subset — `plan` joins as an accepted alias at B2 start (see HARNESS.md reconciliation)*
-- [x] Part 3 — Jobs store & state machine — *shipped in B3 (orchestrate_jobs/tasks/job_log; queued→running→done|failed, attempts cap, per-transition audit log; expired-lease requeue/work-stealing + A2A remain B3.5)*
-- [ ] Part 4 — Allocator (tags → provider-diverse assignment) — *static axis-ranked core shipped in B1 (capability aliases); health × speed × breaker multipliers land with the jobs store (B3) per Part 8*
+- [x] Part 3 — Jobs store & state machine — *shipped in B3 (orchestrate_jobs/tasks/job_log; queued→running→done|failed, attempts cap, per-transition audit log; expired-lease requeue/work-stealing shipped in B5, A2A in B3.5)*
+- [x] Part 4 — Allocator (tags → provider-diverse assignment) — *shipped in B5 (`harness/allocator.ts`): the Part 8 score formula (quality × health × speed × breaker), provider-diverse water-filling with max_per_provider and unused-model preference, deterministic; wired as `policy.routing: "assigned"` (default stays "alias" — B1 capability aliases with native failover); unassignable tasks fall back to the alias, logged*
 - [x] Part 5 — Planner (DAG waves) — *shipped in B3 (topological readiness, parallel wave fire with max_concurrency, upstream injection truncated to 800 chars, failed deps block)*
 - [x] Part 6 — Orchestrator API (`/v1/orchestrate/*`) — *all shipped: `/quick` B2; `/plan` + `GET /jobs/{id}?wait=` B3; `POST /jobs/{id}/judge` + `GET /jobs/{id}/blackboard` B3.5*
 - [x] Part 7 — Swarm manager (blackboard + A2A + judge loop) — *shipped in B3.5: shared-context prompt wrapping, harness-parsed summaries with locked keys, bounded @ask relay (adapted: stateless workers → one relayed question per wave, answer to the blackboard), judge loop with verdict requeue + max_rounds flaw acceptance*
-- [ ] Part 8 — Scoring integration & telemetry — *drift loop in B3/B5+*
-- [ ] Part 9 — Build order & acceptance tests — *followed; step 1 (tags) done*
+- [x] Part 8 — Scoring integration & telemetry — *shipped across B4+B5: X-OmniRoute-Job/Task/Wave trace headers on every orchestrator dispatch (B4); health/speed from the jobs store's own task outcomes (aggregateModelStats, B5); judge drift write-back — two consecutive failed verdicts on a model → quality −0.05 per further fail, floor 0.3, logged (B5). Breaker feed (0.2 multiplier) is plumbed but its data source is future work*
+- [x] Part 9 — Build order & acceptance tests — *followed end to end; every step's acceptance is now a green test: tags (B1), lease expiry requeues + attempts cap (B3+B5), /quick + reroute (B2), planner/allocator waves (B3+B5), swarm judge + blackboard (B3.5), deadline + idempotency (B3)*
 
 ---
 

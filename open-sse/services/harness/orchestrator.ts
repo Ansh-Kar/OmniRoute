@@ -26,7 +26,29 @@
  *   - mode "swarm" (blackboard + judge) is validated but lands in B3.5.
  */
 
-import { isTaskType, TASK_TYPES, type TaskType } from "../modelTags/index.ts";
+import {
+  findModelsByTags,
+  getModelTagIndex,
+  isTaskType,
+  TASK_TYPES,
+  TASK_TYPE_TO_QUERY,
+  type TaskType,
+} from "../modelTags/index.ts";
+import {
+  assignModels,
+  JUDGE_DRIFT_PENALTY,
+  QUALITY_FLOOR,
+  type AllocatorCandidate,
+  type Assignment,
+  type ModelStat,
+} from "./allocator.ts";
+import {
+  CAPABILITY_ALIASES,
+  CAPABILITY_ALIAS_BEST_SIZE,
+  CAPABILITY_ALIAS_POOL_SIZE,
+  CAPABILITY_ALIAS_SIZE,
+  FAST_TIER_PATTERN,
+} from "./capabilityAliases.ts";
 import {
   appendMailboxAnswer,
   assembleSwarmPrompt,
@@ -57,6 +79,10 @@ export type OrchestratePolicy = {
   task_timeout_ms?: number; // default 120000
   judge?: boolean; // swarm mode: run the judge loop (default true)
   max_rounds?: number; // swarm mode: judge refinement cap (1-5, default 3)
+  /** B5: "alias" dispatches the capability alias (native combo failover, default); "assigned" dispatches allocator-picked models (Part 4 water-filling). */
+  routing?: "alias" | "assigned";
+  /** B5 (assigned routing): max tasks per provider per wave (default 3). */
+  max_per_provider?: number;
 };
 
 export type OrchestratePlanBody = {
@@ -85,6 +111,8 @@ export type OrchestrateTask = {
   verdict: string | null;
   latencyMs: number | null;
   lastError: string | null;
+  /** B5: epoch ms until the current wave's lease expires (null = not leased). */
+  leaseUntil: number | null;
 };
 
 export type OrchestrateJob = {
@@ -223,6 +251,8 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
     task_timeout_ms: clampInt(rawPolicy.task_timeout_ms, 1_000, 600_000, ORCHESTRATE_DEFAULTS.taskTimeoutMs),
     judge: rawPolicy.judge !== false,
     max_rounds: clampInt(rawPolicy.max_rounds, 1, 5, ORCHESTRATE_DEFAULTS.maxRounds),
+    routing: rawPolicy.routing === "assigned" ? "assigned" : "alias",
+    max_per_provider: clampInt(rawPolicy.max_per_provider, 1, 16, 3),
   };
   return {
     ok: true,
@@ -300,12 +330,28 @@ function truncate(text: string, max: number): string {
 
 // ── JobsStore interface + in-memory implementation ──────────────────────────
 
+/** B5 drift-loop result from applyJudgeVerdict. */
+export type JudgeDriftResult = {
+  /** Total quality penalty now applied to the model (≤ 1 − QUALITY_FLOOR). */
+  penalty: number;
+  /** True when THIS call crossed/extended the fail streak and penalized. */
+  penalized: boolean;
+};
+
 export interface JobsStore {
   createJob(job: OrchestrateJob, idempotencyKey: string | null): Promise<OrchestrateJob | "conflict"> | OrchestrateJob | "conflict";
   getJob(jobId: string): Promise<OrchestrateJob | null> | OrchestrateJob | null;
   findByIdempotencyKey(key: string): Promise<OrchestrateJob | null> | OrchestrateJob | null;
-  /** Lease a queued task for a wave; false when already leased/terminal. */
+  /** Lease a queued task for a wave; false when already leased/terminal. B5: an expired running lease may be stolen (work-stealing). */
   acquireLease(jobId: string, taskId: string, leaseMs: number, now: number): Promise<boolean> | boolean;
+  /** B5: requeue running tasks whose lease expired (worker lost); returns the ids. */
+  requeueExpiredLeases(jobId: string, now: number): Promise<string[]> | string[];
+  /** B5: per-model outcome aggregates across all jobs (allocator health/speed feed). */
+  aggregateModelStats(): Promise<Record<string, ModelStat>> | Record<string, ModelStat>;
+  /** B5: judge-drift quality penalties per model (Part 8 drift loop). */
+  getModelPenalties(): Promise<Record<string, number>> | Record<string, number>;
+  /** B5: record a judge verdict for a model; penalize on fail streak ≥ 2. */
+  applyJudgeVerdict(model: string, passed: boolean): Promise<JudgeDriftResult> | JudgeDriftResult;
   /** Write a terminal or requeue transition. Returns the updated task. */
   writeTaskTransition(jobId: string, taskId: string, patch: Partial<OrchestrateTask>): Promise<OrchestrateTask | null> | OrchestrateTask | null;
   setJobStatus(jobId: string, status: JobStatus, failureReason: string | null): Promise<void> | void;
@@ -319,6 +365,7 @@ export interface JobsStore {
 /** In-memory JobsStore — unit tests and any embedder without SQLite. */
 export class InMemoryJobsStore implements JobsStore {
   private jobs = new Map<string, OrchestrateJob>();
+  private drift = new Map<string, { penalty: number; failStreak: number }>();
 
   createJob(job: OrchestrateJob, idempotencyKey: string | null): OrchestrateJob | "conflict" {
     if (idempotencyKey) {
@@ -349,21 +396,88 @@ export class InMemoryJobsStore implements JobsStore {
     return null;
   }
 
-  acquireLease(jobId: string, taskId: string, _leaseMs: number, _now: number): boolean {
-    // Expired-lease requeue (guide Part 3 work-stealing) is B3.5; single
-    // runner per job in B3, so a lease is simply a queued→running CAS.
-    void _leaseMs;
-    void _now;
+  acquireLease(jobId: string, taskId: string, leaseMs: number, now: number): boolean {
     const task = this.task(jobId, taskId);
-    if (!task || task.state !== "queued") return false;
-    task.state = "running";
-    return true;
+    if (!task) return false;
+    if (task.state === "queued") {
+      task.state = "running";
+      task.leaseUntil = now + leaseMs;
+      return true;
+    }
+    // B5 work-stealing (guide Part 3): a running task whose lease expired
+    // means its worker is gone — take the lease over.
+    if (task.state === "running" && task.leaseUntil !== null && now > task.leaseUntil) {
+      task.leaseUntil = now + leaseMs;
+      return true;
+    }
+    return false;
+  }
+
+  requeueExpiredLeases(jobId: string, now: number): string[] {
+    const job = this.jobs.get(jobId);
+    if (!job) return [];
+    const expired: string[] = [];
+    for (const task of job.tasks) {
+      if (task.state === "running" && task.leaseUntil !== null && now > task.leaseUntil) {
+        task.state = "queued";
+        task.leaseUntil = null;
+        task.lastError = "lease expired (worker lost)";
+        expired.push(task.id);
+      }
+    }
+    return expired;
+  }
+
+  aggregateModelStats(): Record<string, ModelStat> {
+    const stats: Record<string, ModelStat> = {};
+    for (const job of this.jobs.values()) {
+      for (const task of job.tasks) {
+        if (!task.assignedModel) continue;
+        const stat = (stats[task.assignedModel] ??= { successes: 0, failures: 0, totalLatencyMs: 0 });
+        if (task.state === "done") {
+          stat.successes += 1;
+          stat.totalLatencyMs += task.latencyMs ?? 0;
+        } else if (task.state === "failed") {
+          stat.failures += 1;
+        }
+      }
+    }
+    return stats;
+  }
+
+  getModelPenalties(): Record<string, number> {
+    const penalties: Record<string, number> = {};
+    for (const [model, drift] of this.drift.entries()) {
+      if (drift.penalty > 0) penalties[model] = drift.penalty;
+    }
+    return penalties;
+  }
+
+  applyJudgeVerdict(model: string, passed: boolean): JudgeDriftResult {
+    const entry = this.drift.get(model) ?? { penalty: 0, failStreak: 0 };
+    let penalized = false;
+    if (passed) {
+      entry.failStreak = 0;
+    } else {
+      entry.failStreak += 1;
+      // Part 8 drift loop: two consecutive failed verdicts → quality −0.05
+      // per further fail, floored so quality never drops below 0.3.
+      if (entry.failStreak >= 2) {
+        // 3-decimal rounding keeps repeated 0.05 steps free of float drift.
+        entry.penalty = Math.round(Math.min(entry.penalty + JUDGE_DRIFT_PENALTY, 1 - QUALITY_FLOOR) * 1000) / 1000;
+        penalized = true;
+      }
+    }
+    this.drift.set(model, entry);
+    return { penalty: entry.penalty, penalized };
   }
 
   writeTaskTransition(jobId: string, taskId: string, patch: Partial<OrchestrateTask>): OrchestrateTask | null {
     const task = this.task(jobId, taskId);
     if (!task) return null;
     Object.assign(task, patch);
+    // Leaving "running" always releases the lease.
+    if (patch.state !== undefined && patch.state !== "running") task.leaseUntil = null;
     return structuredClone(task);
   }
 
@@ -401,6 +515,8 @@ export type TaskDispatch = (input: {
   taskId: string;
   tag: TaskType;
   alias: string;
+  /** B5: allocator-picked literal model (assigned routing); null → dispatch the alias. */
+  assignedModel?: string | null;
   /** Chat-shaped messages (upstream-injected; swarm-wrapped for chat tags). */
   messages: Array<{ role: string; content: string }>;
   /** The effective prompt (what an images dispatch should send). */
@@ -427,7 +543,40 @@ export function aliasForTag(tag: TaskType, budget: string): string {
   return budget === "any" ? tag : `${tag}:${budget}`;
 }
 
-const LEASE_MS = 300_000; // leases cover a wave; expiry requeue is B5+
+const LEASE_MS = 300_000; // floor; a wave's lease is max(LEASE_MS, task_timeout + 30s) — B5 expiry/steal is live
+
+/**
+ * B5 allocator candidates for a tag (guide Part 4 step 1-3): the tag index's
+ * ranked specialists, quality prior from the axis/benchmark score, budget
+ * tier applied (best = top 3, cheap = fast-tier names, any = top 6).
+ */
+export function candidatesForTag(tag: TaskType, budget: string): AllocatorCandidate[] {
+  const spec = CAPABILITY_ALIASES[tag];
+  const taskQuery = TASK_TYPE_TO_QUERY[tag];
+  const index = getModelTagIndex();
+  const limit = budget === "best" ? CAPABILITY_ALIAS_BEST_SIZE : budget === "cheap" ? CAPABILITY_ALIAS_POOL_SIZE : CAPABILITY_ALIAS_SIZE;
+  const entries = findModelsByTags(index, {
+    category: tag === "image_gen" ? "image-gen" : taskQuery.category,
+    requireTools: taskQuery.requireTools,
+    requireVision: taskQuery.requireVision,
+    axis: spec?.axes[0],
+    distinctModels: true,
+    diverseProviders: true,
+    limit,
+  });
+  let candidates: AllocatorCandidate[] = entries.map((entry) => {
+    const axis = spec?.axes[0];
+    const axisScore = axis ? entry.axes?.[axis]?.score : undefined;
+    const raw = typeof axisScore === "number" ? axisScore : entry.benchmark?.score;
+    const quality = typeof raw === "number" ? Math.max(0, Math.min(1, raw / 100)) : 0.5;
+    return { model: entry.id, provider: entry.provider ?? null, quality };
+  });
+  if (budget === "cheap") {
+    const fastTier = candidates.filter((c) => FAST_TIER_PATTERN.test(c.model));
+    if (fastTier.length > 0) candidates = fastTier;
+  }
+  return candidates.slice(0, CAPABILITY_ALIAS_SIZE);
+}
 
 type LogFn = (taskId: string | null, event: string, detail?: string | null) => void;
 
@@ -520,6 +669,21 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
     });
     log(null, "judge_verdicts", `${verdicts.filter((v) => v.pass).length} pass, ${failures.length} fail`);
 
+    // B5 drift loop (guide Part 8): verdicts write back per served model —
+    // two consecutive failed verdicts cost quality (floor 0.3), logged.
+    for (const verdict of verdicts) {
+      const task = byId.get(verdict.task_id);
+      if (!task?.assignedModel) continue;
+      const drift = await Promise.resolve(store.applyJudgeVerdict(task.assignedModel, verdict.pass));
+      if (drift.penalized) {
+        log(
+          verdict.task_id,
+          "model_drift_penalty",
+          `${task.assignedModel}: quality −${JUDGE_DRIFT_PENALTY} (judge fail streak), total penalty ${drift.penalty}`
+        );
+      }
+    }
+
     // The round counts as soon as the pass produced verdicts — clean or not.
     await Promise.resolve(store.setJudgeRounds(jobId, round));
 
@@ -561,8 +725,16 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
   let wave = 0;
 
   for (;;) {
-    const current = await Promise.resolve(store.getJob(jobId));
+    let current = await Promise.resolve(store.getJob(jobId));
     if (!current || current.status !== "active") return;
+
+    // B5 lease expiry (guide Part 3): a running task whose lease expired
+    // lost its worker — requeue it so this (or a later) wave re-dispatches.
+    const expired = await Promise.resolve(store.requeueExpiredLeases(jobId, now()));
+    if (expired.length > 0) {
+      for (const id of expired) log(id, "lease_expired", "worker lost; task requeued");
+      current = (await Promise.resolve(store.getJob(jobId))) ?? current;
+    }
 
     if (now() >= current.deadlineAt) {
       await Promise.resolve(store.setJobStatus(jobId, "failed", "deadline"));
@@ -588,16 +760,53 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
     if (deferred > 0) log(null, "wave_deferred", `${deferred} task(s) deferred (max_concurrency ${current.policy.max_concurrency})`);
 
     const waveResults: Array<{ taskId: string; text: string }> = [];
+
+    // B5 assigned routing (guide Part 4): allocator water-filling over this
+    // wave's tasks — quality × health × speed, provider round-robin,
+    // max_per_provider. Unassigned tasks fall back to the capability alias
+    // (logged — never a silent downgrade, and alias failover is not a
+    // downgrade in capability, only in assignment explicitness).
+    const assignments = new Map<string, Assignment>();
+    if (current.policy.routing === "assigned") {
+      const stats = await Promise.resolve(store.aggregateModelStats());
+      const penalties = await Promise.resolve(store.getModelPenalties());
+      const assignTasks = executing
+        .map((id) => byId.get(id))
+        .filter((task): task is OrchestrateTask => Boolean(task));
+      const { assignments: assigned, unassigned } = assignModels(
+        assignTasks.map((task) => ({ id: task.id, tag: task.tag })),
+        (tag) => candidatesForTag(tag as TaskType, current.policy.budget),
+        {
+          maxPerProvider: current.policy.max_per_provider,
+          statOf: (model) => stats[model],
+          penaltyOf: (model) => penalties[model] ?? 0,
+        }
+      );
+      for (const [taskId, assignment] of assigned) {
+        assignments.set(taskId, assignment);
+        log(
+          taskId,
+          "task_assigned",
+          `${assignment.candidate.model} (${assignment.candidate.provider ?? "?"}) score ${assignment.score.toFixed(2)}`
+        );
+      }
+      for (const un of unassigned) {
+        log(un.id, "assign_fallback_alias", `${un.reason}; dispatching the capability alias instead`);
+      }
+    }
+
+    const leaseMs = Math.max(LEASE_MS, current.policy.task_timeout_ms + 30_000);
     await Promise.all(
       executing.map(async (taskId) => {
         const task = byId.get(taskId);
         if (!task) return;
-        const leased = await Promise.resolve(store.acquireLease(jobId, taskId, LEASE_MS, now()));
+        const leased = await Promise.resolve(store.acquireLease(jobId, taskId, leaseMs, now()));
         if (!leased) return;
         log(taskId, "task_start", `attempt ${task.attempts + 1}`);
 
         const prompt = effectivePrompt(current, task, byId);
         const alias = aliasForTag(task.tag, current.policy.budget);
+        const assignment = assignments.get(taskId);
         const started = now();
         let outcome: Awaited<ReturnType<TaskDispatch>>;
         try {
@@ -605,6 +814,7 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
             taskId,
             tag: task.tag,
             alias,
+            assignedModel: assignment?.candidate.model ?? null,
             messages: [{ role: "user", content: prompt }],
             prompt,
             timeoutMs: current.policy.task_timeout_ms,

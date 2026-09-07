@@ -58,13 +58,14 @@ export function jobFromPlan(
       verdict: null,
       latencyMs: null,
       lastError: null,
+      leaseUntil: null,
     })),
     log: [],
   };
 }
 
 export function chatDispatchFor(request: Request, jobId?: string | null): TaskDispatch {
-  return async ({ taskId, tag, alias, messages, prompt, timeoutMs, wave }) => {
+  return async ({ taskId, tag, alias, assignedModel, messages, prompt, timeoutMs, wave }) => {
     // B4 trace headers — X-OmniRoute-Job/Task/Wave ride the self-fetch so
     // every orchestrator-originated upstream call is attributable in logs.
     const traceHeaders: Record<string, string> = { "X-OmniRoute-Task": taskId };
@@ -81,7 +82,10 @@ export function chatDispatchFor(request: Request, jobId?: string | null): TaskDi
           diverseProviders: true,
           limit: 4,
         });
-        const chosen = candidates[0];
+        // B5: an allocator assignment (assigned routing) picks the model.
+        const chosen =
+          (assignedModel ? candidates.find((entry) => entry.id === assignedModel) : undefined) ??
+          candidates[0];
         if (!chosen) return { ok: false, error: "no image models available" };
         const response = await selfFetchImages({
           incoming: request,
@@ -100,7 +104,10 @@ export function chatDispatchFor(request: Request, jobId?: string | null): TaskDi
       }
       const response = await selfFetchChat({
         incoming: request,
-        body: { model: alias, stream: false, messages },
+        // B5: assigned routing dispatches the allocator-picked model;
+        // alias routing (default) dispatches the capability alias and lets
+        // the native combo machinery fail over.
+        body: { model: assignedModel ?? alias, stream: false, messages },
         timeoutMs: Math.min(timeoutMs || ORCHESTRATE_DEFAULTS.taskTimeoutMs, 600_000),
         extraHeaders: traceHeaders,
       });

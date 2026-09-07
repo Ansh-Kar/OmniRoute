@@ -2267,8 +2267,10 @@ paths:
         replays return the original job without re-executing.
         policy: budget (any|best|cheap), max_attempts (1-5, default 3),
         max_concurrency (1-16, default 8), deadline_s (default 600),
-        task_timeout_ms (default 120000). mode "swarm" (blackboard + judge)
-        lands in the next build.
+        task_timeout_ms (default 120000), routing (alias|assigned, default
+        alias; assigned = allocator water-filling per Guide 1 Part 4),
+        max_per_provider (1-16, default 3, assigned routing). mode "swarm"
+        (blackboard + judge) lands in the next build.
       security:
         - BearerAuth: []
       parameters:

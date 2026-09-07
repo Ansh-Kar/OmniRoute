@@ -264,6 +264,38 @@ hardening, complexity tiers, and orchestrator trace headers (see
   count 409). Combined harness 74/74; services 461/461; openapi 704
   paths / 99.3%; typecheck:core clean.
 
+### 5f. Harness B5 — allocator, drift loop, lease expiry (`feat(harness)`, Guide 1 Parts 4+8)
+
+Guide 1 Part 4+8 completion — the live half of routing on top of B1's
+static ranks (see `docs/guides/HARNESS.md` §B5):
+
+- **Allocator scoring** — `open-sse/services/harness/allocator.ts` (pure,
+  deterministic): `quality × (0.5+0.5×health) × (0.5+0.5×speed) ×
+  breaker_penalty`; health/speed from the jobs store's own per-model task
+  outcomes (`aggregateModelStats`, both stores), Laplace-smoothed so no
+  history is neutral.
+- **Assigned routing** — `policy.routing: "assigned"` runs
+  provider-diverse water-filling per wave (`max_per_provider`, unused-model
+  preference) and dispatches the literal picked model (`task_assigned`
+  logged with score); default stays `"alias"` (B1 behavior, native combo
+  failover). Unassignable tasks fall back to the alias, logged. Image
+  dispatch honors assignments.
+- **Judge drift loop** — every verdict writes back per served model: two
+  consecutive fails → quality −0.05 per further fail (floor 0.3),
+  `model_drift_penalty` logged; persisted in `orchestrate_model_drift`
+  (SQLite) / in-memory map; feeds the next wave's allocator.
+- **Lease expiry + work-stealing** — tasks carry `lease_until`
+  (`max(5min, task_timeout+30s)`); expired running leases are stealable,
+  and each wave sweeps lost tasks back to `queued` (`lease_expired` logged,
+  attempts preserved) — Part 9 acceptance "lease expiry requeues" is a
+  tested behavior in both stores.
+- Tests: `tests/unit/services/harness-b5.test.ts` (19 — score formula
+  exactness, water-fill/max_per_provider/penalty/health reordering,
+  determinism, lease lifecycle + steal + requeue + SQLite parity, drift
+  streak/reset/cap + SQLite parity, policy clamps, e2e: alias vs assigned
+  dispatch, lease-expiry recovery, judge drift write-back). Combined
+  harness+regression batch 124/124; openapi 704/99.3%; fastcheck tsc clean.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

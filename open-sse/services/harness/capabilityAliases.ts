@@ -53,7 +53,7 @@ export const CAPABILITY_ALIAS_POOL_SIZE = 24;
  */
 export type CapabilityBudget = "any" | "best" | "cheap";
 
-const FAST_TIER_PATTERN =
+export const FAST_TIER_PATTERN =
   /(^|[^a-z])(flash|mini|air|haiku|lite|nano|small|instant|turbo|fast)([^a-z]|$)|-(flash|mini|air|haiku|lite|nano|small|instant|turbo|fast)$|\b\d+b\b/i;
 
 export type CapabilityAliasSpec = {

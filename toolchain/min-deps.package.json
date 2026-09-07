@@ -1,7 +1,7 @@
 {
   "name": "omniroute-harness-min-deps",
   "private": true,
-  "description": "Minimal dependency set for the harness fast environment (fork toolchain) — the smallest install that runs the harness test suites + typecheck:core. Derived failure-driven from the suites' import closure. Install with --ignore-scripts, then slim: rm -rf node_modules/@img node_modules/@next/swc-* node_modules/@babel node_modules/svelte node_modules/@swc. See toolchain/README.md.",
+  "description": "Minimal dependency set for the harness fast environment (fork toolchain) \u2014 the smallest install that runs the harness test suites + typecheck:core. Derived failure-driven from the suites' import closure. Install with --ignore-scripts, then slim: rm -rf node_modules/@img node_modules/@next/swc-* node_modules/@babel node_modules/svelte node_modules/@swc. See toolchain/README.md.",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@toon-format/toon": "^4.1.1",
@@ -11,6 +11,7 @@
     "ioredis": "^5.10.1",
     "jose": "^6.2.12",
     "js-tiktoken": "^1.0.21",
+    "js-yaml": "^5.4.1",
     "next": "16.3.3",
     "omniglyph": "^1.4.0",
     "pino": "^10.3.1",

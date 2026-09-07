@@ -41,3 +41,13 @@ of truth for the repo itself.
 harness-b1…b4 + provider-node-reserved-prefix + nvidia/chatCore suites:
 105/105; `tsc -p tsconfig.fastcheck.json`: 0 errors. The full 461-test
 services sweep and real-package typecheck remain full-deps gates (CI).
+
+## Typecheck (fastcheck)
+
+```bash
+node node_modules/typescript/bin/tsc --pretty false -p tsconfig.fastcheck.json \
+  --incremental --tsBuildInfoFile /work/tsc-fastcheck.tsbuildinfo
+```
+
+`--incremental` matters on slow disks: the first (cold) run reads ~1 GB of
+declaration files, subsequent runs only recheck changed files.

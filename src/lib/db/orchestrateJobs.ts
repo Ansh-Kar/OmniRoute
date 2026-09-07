@@ -15,11 +15,17 @@
 import { getDbInstance } from "./core";
 import type {
   JobStatus,
+  JudgeDriftResult,
   OrchestrateJob,
   OrchestrateLogEntry,
   OrchestrateTask,
   TaskState,
 } from "@omniroute/open-sse/services/harness/orchestrator.ts";
+import {
+  JUDGE_DRIFT_PENALTY,
+  QUALITY_FLOOR,
+  type ModelStat,
+} from "@omniroute/open-sse/services/harness/allocator.ts";
 
 let ensured = false;
 
@@ -77,6 +83,19 @@ export function ensureOrchestrateTables(): void {
   } catch {
     // Column already present.
   }
+  // B5: lease timestamps on tasks (work-stealing) + the judge drift table.
+  try {
+    db.exec(`ALTER TABLE orchestrate_tasks ADD COLUMN lease_until INTEGER`);
+  } catch {
+    // Column already present.
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS orchestrate_model_drift (
+      model TEXT PRIMARY KEY,
+      penalty REAL NOT NULL DEFAULT 0,
+      fail_streak INTEGER NOT NULL DEFAULT 0
+    );
+  `);
   ensured = true;
 }
 
@@ -96,6 +115,7 @@ function mapTask(row: any): OrchestrateTask {
     verdict: row.verdict ?? null,
     latencyMs: row.latency_ms ?? null,
     lastError: row.last_error ?? null,
+    leaseUntil: row.lease_until ?? null,
   };
 }
 
@@ -192,17 +212,110 @@ export class SqliteJobsStore {
     return row ? this.getJob(row.job_id) : null;
   }
 
-  acquireLease(jobId: string, taskId: string, _leaseMs: number, _now: number): boolean {
-    // queued→running CAS. Expired-lease requeue (work stealing) is B3.5;
-    // B3 has a single runner per job.
-    void _leaseMs;
-    void _now;
+  acquireLease(jobId: string, taskId: string, leaseMs: number, now: number): boolean {
+    // queued→running CAS with a real lease timestamp; an expired running
+    // lease can be stolen (guide Part 3 work-stealing, B5).
     ensureOrchestrateTables();
     const db = getDbInstance();
-    const result = db
-      .prepare(`UPDATE orchestrate_tasks SET state = 'running' WHERE job_id = ? AND task_id = ? AND state = 'queued'`)
-      .run(jobId, taskId);
-    return result.changes > 0;
+    const cas = db
+      .prepare(
+        `UPDATE orchestrate_tasks SET state = 'running', lease_until = ?
+         WHERE job_id = ? AND task_id = ? AND state = 'queued'`
+      )
+      .run(now + leaseMs, jobId, taskId);
+    if (cas.changes > 0) return true;
+    const steal = db
+      .prepare(
+        `UPDATE orchestrate_tasks SET lease_until = ?
+         WHERE job_id = ? AND task_id = ? AND state = 'running'
+           AND lease_until IS NOT NULL AND lease_until < ?`
+      )
+      .run(now + leaseMs, jobId, taskId, now);
+    return steal.changes > 0;
+  }
+
+  requeueExpiredLeases(jobId: string, now: number): string[] {
+    ensureOrchestrateTables();
+    const db = getDbInstance();
+    const rows = db
+      .prepare(
+        `SELECT task_id FROM orchestrate_tasks
+         WHERE job_id = ? AND state = 'running' AND lease_until IS NOT NULL AND lease_until < ?`
+      )
+      .all(jobId, now) as Array<{ task_id: string }>;
+    if (rows.length === 0) return [];
+    const update = db.prepare(
+      `UPDATE orchestrate_tasks SET state = 'queued', lease_until = NULL, last_error = 'lease expired (worker lost)'
+       WHERE job_id = ? AND task_id = ?`
+    );
+    return rows.map((row) => {
+      update.run(jobId, row.task_id);
+      return row.task_id;
+    });
+  }
+
+  aggregateModelStats(): Record<string, ModelStat> {
+    ensureOrchestrateTables();
+    const db = getDbInstance();
+    const rows = db
+      .prepare(
+        `SELECT assigned_model AS model,
+                SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS successes,
+                SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS failures,
+                SUM(CASE WHEN state = 'done' THEN COALESCE(latency_ms, 0) ELSE 0 END) AS totalLatencyMs
+         FROM orchestrate_tasks
+         WHERE assigned_model IS NOT NULL AND assigned_model != ''
+         GROUP BY assigned_model`
+      )
+      .all() as Array<{ model: string; successes: number; failures: number; totalLatencyMs: number }>;
+    const stats: Record<string, ModelStat> = {};
+    for (const row of rows) {
+      stats[row.model] = {
+        successes: Number(row.successes) || 0,
+        failures: Number(row.failures) || 0,
+        totalLatencyMs: Number(row.totalLatencyMs) || 0,
+      };
+    }
+    return stats;
+  }
+
+  getModelPenalties(): Record<string, number> {
+    ensureOrchestrateTables();
+    const db = getDbInstance();
+    const rows = db
+      .prepare(`SELECT model, penalty FROM orchestrate_model_drift WHERE penalty > 0`)
+      .all() as Array<{ model: string; penalty: number }>;
+    const penalties: Record<string, number> = {};
+    for (const row of rows) penalties[row.model] = Number(row.penalty) || 0;
+    return penalties;
+  }
+
+  applyJudgeVerdict(model: string, passed: boolean): JudgeDriftResult {
+    ensureOrchestrateTables();
+    const db = getDbInstance();
+    const row = db
+      .prepare(`SELECT penalty, fail_streak FROM orchestrate_model_drift WHERE model = ?`)
+      .get(model) as { penalty: number; fail_streak: number } | undefined;
+    let penalty = Number(row?.penalty) || 0;
+    let failStreak = Number(row?.fail_streak) || 0;
+    let penalized = false;
+    if (passed) {
+      failStreak = 0;
+    } else {
+      failStreak += 1;
+      // Part 8 drift loop: two consecutive failed verdicts → quality −0.05
+      // per further fail, floored so quality never drops below 0.3.
+      if (failStreak >= 2) {
+        // 3-decimal rounding keeps repeated 0.05 steps free of float drift.
+        penalty = Math.round(Math.min(penalty + JUDGE_DRIFT_PENALTY, 1 - QUALITY_FLOOR) * 1000) / 1000;
+        penalized = true;
+      }
+    }
+    db.prepare(
+      `INSERT INTO orchestrate_model_drift (model, penalty, fail_streak) VALUES (?, ?, ?)
+       ON CONFLICT(model) DO UPDATE SET penalty = excluded.penalty, fail_streak = excluded.fail_streak`
+    ).run(model, penalty, failStreak);
+    return { penalty, penalized };
   }
 
   writeTaskTransition(jobId: string, taskId: string, patch: Partial<OrchestrateTask>): OrchestrateTask | null {
@@ -221,12 +334,17 @@ export class SqliteJobsStore {
       ["verdict", "verdict"],
       ["latencyMs", "latency_ms"],
       ["lastError", "last_error"],
+      ["leaseUntil", "lease_until"],
     ];
     for (const [field, column] of columns) {
       if (field in patch) {
         fields.push(`${column} = ?`);
         values.push((patch as Record<string, unknown>)[field] ?? null);
       }
+    }
+    // Leaving "running" always releases the lease (B5).
+    if (patch.state !== undefined && patch.state !== "running") {
+      fields.push(`lease_until = NULL`);
     }
     if (fields.length > 0) {
       db.prepare(
