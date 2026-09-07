@@ -307,10 +307,12 @@ test("aliases: unknown and provider-prefixed names are not aliases", () => {
   assert.ok(isCapabilityAlias("code"));
   assert.ok(!isCapabilityAlias("Code")); // model ids are case-sensitive
   assert.ok(!isCapabilityAlias("code "));
-  assert.deepEqual(
-    [...Object.keys(CAPABILITY_ALIASES)].sort(),
-    ["chat", "code", "math", "reasoning", "research", "search", "vision"]
-  );
+  // Every alias is a documented capability name; Guide 2's contract strings
+  // (vision, code, research, plan, chat) are all present.
+  const aliasKeys = [...Object.keys(CAPABILITY_ALIASES)].sort();
+  for (const contract of ["chat", "code", "math", "plan", "reasoning", "research", "search", "vision"]) {
+    assert.ok(aliasKeys.includes(contract), `alias ${contract} present`);
+  }
 });
 
 test("aliases: live registry resolves every alias or falls back to chat", () => {

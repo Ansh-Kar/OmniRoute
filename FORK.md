@@ -137,6 +137,31 @@ the model.** Full guide in `docs/guides/HARNESS.md`.
   shapes and stage-2 degradation, alias construction + live-registry
   resolution, `getComboForModel` seam e2e). `typecheck:core` clean.
 
+### 5b. Harness B2 — Hermes contract surface (`feat(harness)`)
+
+Guide 1 Part 6 `/quick` + Guide 2's capability vocabulary (see
+`docs/guides/HARNESS.md` §B2 and `docs/guides/ORCHESTRATION_SPEC.md`):
+
+- **`plan` task type + alias + classifier class** — Guide 2's six contract
+  strings (`vision · image_gen · code · research · plan · chat`) all work
+  across the B1 surface; whole-registry GPQA/MMLU ranking.
+- **Budget tiers** — bare-name suffix `alias:best` (top-3 specialists) and
+  `alias:cheap` (fast-tier names from a widened pool, relaxing to `any` when
+  empty). Unknown suffixes fall through to ordinary resolution;
+  provider-prefixed names never parse as budget aliases.
+- **`POST /api/v1/orchestrate/quick`** — single delegated task,
+  synchronous, guide-shaped response `{ok, model, provider, text,
+  latency_ms, score, decision}` with model/provider/decision read from the
+  pipeline's own `X-OmniRoute-*` headers; `image_gen` dispatches the images
+  API with the index's best image specialist; `Idempotency-Key` is
+  forwarded so the chat pipeline's NATIVE idempotent replay applies;
+  errors are guide-shaped (400 per-field `invalid_request`, 503
+  `no_active_models`).
+- Tests: `tests/unit/services/harness-b2.test.ts` (12 — plan vocabulary,
+  budget tiers + relaxation, seam resolution, quick shape mapping with
+  stub dispatches incl. 503/throw paths and image_gen). All services
+  417/417, openapi routes/coverage, typecheck:core green.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

@@ -34,6 +34,28 @@ import {
 /** How many specialists an alias combo keeps as failover candidates. */
 export const CAPABILITY_ALIAS_SIZE = 6;
 
+/** `best` keeps only the top tier of axis-ranked specialists. */
+export const CAPABILITY_ALIAS_BEST_SIZE = 3;
+
+/**
+ * `cheap` widens the candidate pool before filtering to fast-tier names —
+ * flash/mini-class models rarely sit in the plain top-6, so the filter needs
+ * a deeper list to draw from (then re-caps at CAPABILITY_ALIAS_SIZE).
+ */
+export const CAPABILITY_ALIAS_POOL_SIZE = 24;
+
+/**
+ * Budget tiers (Guide 1 `/quick` policy): `any` = the full candidate list,
+ * `best` = top CAPABILITY_ALIAS_BEST_SIZE axis-ranked specialists, `cheap` =
+ * fast-tier models only (name heuristic until cost data lands in the index).
+ * Approximations are documented in HARNESS.md; both relax to `any` when the
+ * narrowed pool would be empty — a thinner route beats a dead one.
+ */
+export type CapabilityBudget = "any" | "best" | "cheap";
+
+const FAST_TIER_PATTERN =
+  /(^|[^a-z])(flash|mini|air|haiku|lite|nano|small|instant|turbo|fast)([^a-z]|$)|-(flash|mini|air|haiku|lite|nano|small|instant|turbo|fast)$|\b\d+b\b/i;
+
 export type CapabilityAliasSpec = {
   /** Tag-index category the alias retrieves from. */
   category: TaskType;
@@ -50,6 +72,7 @@ export const CAPABILITY_ALIASES: Record<string, CapabilityAliasSpec> = {
   code: { category: "code", axes: ["swe_bench", "humaneval"], description: "best coding specialists (SWE-bench ranked)" },
   vision: { category: "vision", axes: [], description: "best vision-capable models" },
   reasoning: { category: "reasoning", axes: ["gpqa", "mmlu"], description: "best reasoning models (GPQA ranked)" },
+  plan: { category: "plan", axes: ["gpqa", "mmlu"], description: "best decomposition/planning models (GPQA ranked)" },
   math: { category: "math", axes: ["math500", "gpqa"], description: "best math models (MATH-500 ranked)" },
   research: { category: "research", axes: [], description: "search-grounded research models" },
   search: { category: "search", axes: [], description: "web-search models" },
@@ -81,7 +104,22 @@ export type CapabilityAliasCombo = {
  * mirroring fusion's panelFromTags resolution discipline.
  */
 export function buildCapabilityAliasCombo(name: string): CapabilityAliasCombo | null {
-  const spec = isCapabilityAlias(name) ? CAPABILITY_ALIASES[name] : null;
+  // Budget suffix (Guide 1 /quick): bare `alias:best` / `alias:cheap`.
+  // Only bare names — a provider-prefixed `vendor/code:best` is an ordinary
+  // model reference and never reaches this parser.
+  let budget: CapabilityBudget | null = null;
+  let aliasName = name;
+  const colon = name.indexOf(":");
+  if (colon > 0 && !name.includes("/")) {
+    aliasName = name.slice(0, colon);
+    const suffix = name.slice(colon + 1);
+    if (suffix === "best" || suffix === "cheap" || suffix === "any") {
+      budget = suffix;
+    } else {
+      return null; // unknown budget tier — not an alias, fall through
+    }
+  }
+  const spec = isCapabilityAlias(aliasName) ? CAPABILITY_ALIASES[aliasName] : null;
   if (!spec) return null;
   const taskQuery = TASK_TYPE_TO_QUERY[spec.category];
   const index = getModelTagIndex();
@@ -98,7 +136,13 @@ export function buildCapabilityAliasCombo(name: string): CapabilityAliasCombo | 
       ...overrides,
     });
 
-  let candidates = query();
+  let candidates = query(budget === "cheap" ? { limit: CAPABILITY_ALIAS_POOL_SIZE } : {});
+  if (budget === "best" && candidates.length > 0) {
+    candidates = candidates.slice(0, CAPABILITY_ALIAS_BEST_SIZE);
+  } else if (budget === "cheap") {
+    const fastTier = candidates.filter((entry) => FAST_TIER_PATTERN.test(entry.model));
+    candidates = (fastTier.length > 0 ? fastTier : candidates).slice(0, CAPABILITY_ALIAS_SIZE);
+  }
   if (candidates.length === 0 && taskQuery.fallbackCategory) {
     // e.g. no search-registry models connected → fall back to chat so the
     // alias still routes somewhere sensible instead of 404ing.

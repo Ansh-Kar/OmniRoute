@@ -21,7 +21,7 @@
 - [ ] Part 3 — Jobs store & state machine — *B3*
 - [ ] Part 4 — Allocator (tags → provider-diverse assignment) — *static axis-ranked core shipped in B1 (capability aliases); health × speed × breaker multipliers land with the jobs store (B3) per Part 8*
 - [ ] Part 5 — Planner (DAG waves) — *B3*
-- [ ] Part 6 — Orchestrator API (`/v1/orchestrate/*`) — *B2 (`/quick`) then B3 (`/plan`, jobs, blackboard, judge)*
+- [ ] Part 6 — Orchestrator API (`/v1/orchestrate/*`) — *`/quick` ✅ shipped in B2 (see HARNESS.md); `/plan`, jobs, blackboard, judge are B3*
 - [ ] Part 7 — Swarm manager (blackboard + A2A + judge loop) — *B3, builds on the shipped `strategy: "swarm"` combo engine*
 - [ ] Part 8 — Scoring integration & telemetry — *drift loop in B3/B5+*
 - [ ] Part 9 — Build order & acceptance tests — *followed; step 1 (tags) done*

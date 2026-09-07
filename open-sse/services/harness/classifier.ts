@@ -73,6 +73,12 @@ const TYPE_PATTERNS: Array<{ type: TaskType; pattern: RegExp; weight: number }> 
       /\b(logic|deduce|deduction|infer|inference|puzzle|riddle|paradox|step-by-step reasoning|chain of thought|think (it )?through|reason (about|through|carefully))\b/i,
   },
   {
+    type: "plan",
+    weight: 1,
+    pattern:
+      /\b(plan|planning|decompos(e|ition)|break (this|it|the problem) down|roadmap|milestones?|work breakdown|task list|step-by-step plan)\b/i,
+  },
+  {
     type: "vision",
     weight: 0,
     pattern: /$^/, // vision is decided by body shape, not keywords

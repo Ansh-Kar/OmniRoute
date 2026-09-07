@@ -19,7 +19,7 @@
 ## Status Tracker
 - [ ] Part 1 — What the user must never see (abstraction rules) — *contract for the brain; the fork's counterpart is the boundary rule in `docs/guides/HARNESS.md`*
 - [ ] Part 2 — Config changes (`config.yaml`) — *blocked on Guide 1 (B2/B3): `base_url :20128` + `model: auto` already works against the fork today; the sidecar decommission waits for Guide 1 acceptance*
-- [ ] Part 3 — Orchestrator skill v2 (the brain contract, complete) — *blocked on B2 (`/quick`) and B3 (`/plan`, jobs, judge)*
+- [ ] Part 3 — Orchestrator skill v2 (the brain contract, complete) — *B2 shipped `/quick` (tag, prompt, images, policy.budget, Idempotency-Key); still blocked on B3 (`/plan`, jobs, judge)*
 - [ ] Part 4 — Helper scripts — *blocked on B2/B3*
 - [ ] Part 5 — Telegram UX surface — *client-side, no fork work*
 - [ ] Part 6 — Cron & background jobs — *client-side; cron jobs bypass the orchestrator by design*

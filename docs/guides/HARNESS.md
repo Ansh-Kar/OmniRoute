@@ -192,3 +192,65 @@ can never drift silently.
 B1 complies: `/v1/harness/task` routes and executes ONE delegated request;
 fan-out only happens when the caller explicitly configures a swarm/fusion
 combo or sends `body.swarm`.
+
+## B2 — the Hermes contract surface (Guide 1 Part 6 /quick, Guide 2)
+
+**Shipped in B2** (see FORK.md for the commit): `plan` vocabulary, budget
+tiers, and `POST /api/v1/orchestrate/quick`.
+
+### `plan` and the Guide 2 capability reference
+
+Guide 2's brain contract uses exactly six strings:
+`vision · image_gen · code · research · plan · chat`. All of them now work
+across the whole B1 surface (`?task=`, `/harness/classify` output, aliases,
+`/harness/task`): `plan` is a first-class task type (whole-registry
+GPQA/MMLU ranking, same axes as `reasoning` — decomposition IS deep
+reasoning) with its own alias and classifier class. `math`, `search` and
+`reasoning` remain as safe supersets.
+
+### Budget tiers — `alias:best` / `alias:cheap`
+
+`policy.budget` from Guide 1 maps to a budget suffix on the bare alias name
+(parsed only when there is no provider prefix, so `vendor/code:best` stays
+an ordinary model reference):
+
+| Budget | Behavior |
+|---|---|
+| `any` (default) | the plain alias — top 6 axis-ranked, provider-diverse |
+| `best` | top **3** axis-ranked specialists only |
+| `cheap` | **fast-tier** models only (name heuristic: flash/mini/air/haiku/lite/nano/small/instant/turbo/fast/`<n>b`), drawn from a widened pool; relaxes to `any` when the tier is empty |
+
+These are documented approximations until per-model cost data lands in the
+tag index (B5+); both tiers relax rather than 404 — a thinner route beats a
+dead one. Unknown suffixes (`code:deluxe`) are not aliases and fall through
+to ordinary model resolution.
+
+### `POST /api/v1/orchestrate/quick`
+
+Single delegated task, synchronous. The brain names a tag, never a model:
+
+```bash
+curl -H "Authorization: Bearer $KEY" -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"tag":"vision","prompt":"describe this image","images":["data:image/png;base64,…"],
+       "policy":{"budget":"any"}}' \
+  http://localhost:3000/api/v1/orchestrate/quick
+# → {"ok":true,"model":"openai/gpt-5.6","provider":"openai","text":"…",
+#    "latency_ms":812,"score":0.84,"decision":{"strategy":"priority",…}}
+```
+
+- Chat-shaped tags execute through the alias (full native failover);
+  `model`/`provider`/`decision` come from the pipeline's own
+  `X-OmniRoute-*` response headers — never guessed.
+- `image_gen` resolves the tag index's best image specialist and dispatches
+  the images API with that explicit model (single-model in B2; the B3
+  allocator brings real image failover).
+- `Idempotency-Key` is forwarded into the chat pipeline, so **native
+  idempotent replay** applies to quick calls unchanged.
+- Errors: `400 {"ok":false,"error":"invalid_request","details":[…]}`
+  (per-field, for the brain's one corrected re-emit) and
+  `503 {"ok":false,"error":"no_active_models","tag":…}` when a capability
+  has no live candidates — the guide's "capability temporarily unavailable"
+  case.
+
+`score` is the served model's axis score (0..1) for the tag's ranking axis
+(null when the served model has no evidence).

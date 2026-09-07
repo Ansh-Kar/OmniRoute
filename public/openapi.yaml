@@ -1618,7 +1618,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [code, research, math, reasoning, vision, search, chat, image_gen]
+            enum: [code, research, math, reasoning, plan, vision, search, chat, image_gen]
           required: false
         - name: category
           in: query
@@ -1649,6 +1649,62 @@ paths:
           description: Missing/invalid task or category
         "401":
           description: Unauthorized
+
+  /api/v1/orchestrate/quick:
+    post:
+      tags: [Harness]
+      summary: Single delegated task, synchronous (capability tag in, answer out)
+      description: >-
+        Fork(harness B2, Guide 1 Part 6). The caller names a capability tag
+        (vision, image_gen, code, research, math, reasoning, plan, search,
+        chat) — never a model. The tag resolves to a capability alias (an
+        ephemeral priority combo with native failover) and executes through
+        the standard chat pipeline; image_gen dispatches the images API with
+        the tag index's best image specialist. policy.budget: any (default),
+        best (top-3 specialists), cheap (fast-tier models). Optional
+        Idempotency-Key header is forwarded — the chat pipeline's native
+        replay applies. Errors: 400 invalid_request with per-field details;
+        503 no_active_models when a capability has no live candidates.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+          required: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tag, prompt]
+              properties:
+                tag:
+                  type: string
+                  enum: [code, research, math, reasoning, plan, vision, search, chat, image_gen]
+                prompt:
+                  type: string
+                images:
+                  type: array
+                  items:
+                    type: string
+                policy:
+                  type: object
+                  properties:
+                    budget:
+                      type: string
+                      enum: [any, best, cheap]
+      responses:
+        "200":
+          description: 'ok result: {ok, model, provider, text, latency_ms, score, decision}'
+        "400":
+          description: invalid_request — per-field details
+        "401":
+          description: Unauthorized
+        "503":
+          description: no_active_models for the tag
 
   /api/v1/harness/classify:
     post:

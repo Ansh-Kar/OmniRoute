@@ -196,6 +196,7 @@ export const TASK_TYPES = [
   "research",
   "math",
   "reasoning",
+  "plan",
   "vision",
   "search",
   "chat",
@@ -252,6 +253,12 @@ export const TASK_TYPE_TO_QUERY: Record<
   reasoning: {
     axes: ["gpqa", "mmlu"],
     description: "logic, deduction, multi-step reasoning",
+  },
+  plan: {
+    // Guide 2's Hermes contract string — decomposition/planning is deep
+    // reasoning; same whole-registry GPQA/MMLU ranking, its own alias.
+    axes: ["gpqa", "mmlu"],
+    description: "decomposition, planning, multi-step strategy",
   },
   vision: {
     category: "vision",
