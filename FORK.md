@@ -100,7 +100,44 @@ instead (`.env.example`, `docker-compose.yml`, annotated in
 | `OMNIROUTE_CHAT_ADMISSION_MAX_QUEUED_BYTES` | `4 MB`   | `16 MB` | several ~750 KB agent bodies parked during the wait |
 | `OMNIROUTE_PROXY_DISPATCHER_CONNECTIONS`    | `32`     | `64`    | fusion panels × agents sharing one account proxy    |
 
-### 5. Transport: concurrent proxy dispatcher streams (already upstream)
+### 5. Harness B1 — capability routing (`feat(harness)` @ 056cc85ce)
+
+Layer 3 of the agent harness: **the caller names the work, the gateway picks
+the model.** Full guide in `docs/guides/HARNESS.md`.
+
+- **Benchmark axes** (`open-sse/services/modelTags/benchmarkAxes.ts`): six
+  normalized 0..100 axes — `swe_bench`, `humaneval`, `math500`, `gpqa`,
+  `mmlu`, `lmarena_elo` (ELO via `(elo−1200)/3`) — seeded over the curated
+  flagship set with the same discipline as the composite seeds (basis notes,
+  runtime `scoreLookup` outranks seeds, "no evidence" is never a number).
+  `findModelsByTags` gains `axis:` — one axis ranks and floors the whole
+  chat registry; no axis = byte-identical pre-B1 behavior.
+- **Task classifier** (`open-sse/services/harness/classifier.ts`): free
+  stage-1 heuristics (image parts → vision; keyword scoring → code / math /
+  reasoning / research / search; deep markers + size + history → fast/deep)
+  plus an opt-in stage-2 model call that only refines low-confidence
+  verdicts and degrades to stage 1 on any failure.
+- **Capability aliases** (`capabilityAliases.ts`): bare reserved model names
+  `code`/`vision`/`reasoning`/`math`/`research`/`search`/`chat` resolve —
+  per request, inside `getComboForModel`, after DB lookups — to ephemeral
+  PRIORITY combos over the index's current best specialists. Full native
+  combo machinery applies (failover, admission, breakers, translation).
+  Operator combos named `code` deliberately override; `provider/code` is an
+  ordinary model; empty resolution falls through to a 404, never a wrong
+  route.
+- **API** (API-key policy): `GET /api/v1/models/catalog`,
+  `GET /api/v1/models/best?task=`, `POST /api/v1/harness/classify`,
+  `POST /api/v1/harness/task` (classify → rewrite model to the alias →
+  self-fetch `/v1/chat/completions` with forwarded credentials; streaming
+  passthrough; `X-Harness-Route`/`X-Harness-Tier` headers;
+  `?classify_only`/`?alias` overrides). Documented in both OpenAPI specs;
+  routes + coverage gates green (699 paths / 99.3%).
+- Tests: `tests/unit/services/harness-b1.test.ts` (17 — axis
+  seeding/ranking/reordering/floors, legacy parity, classifier incl. hostile
+  shapes and stage-2 degradation, alias construction + live-registry
+  resolution, `getComboForModel` seam e2e). `typecheck:core` clean.
+
+### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)
 (`fix(proxy): allow concurrent proxy dispatcher streams`) was **merged into
@@ -122,6 +159,8 @@ contribution is the capacity bump above + documentation.
 
 - `docs/guides/PARALLEL_EXECUTION.md` — the full guide (tags, panels, swarms,
   admission, transport).
+- `docs/guides/HARNESS.md` — the agent-harness Layer-3 surface (axes,
+  classifier, aliases, catalog/task API) and the seeding policy.
 - `examples/fusion-parallel/README.md` — fusion panel examples walkthrough.
 - `examples/swarm/README.md` — swarm examples walkthrough.
 - `docs/reference/ENVIRONMENT.md` — fork deployment defaults annotated on the
