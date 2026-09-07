@@ -18,10 +18,10 @@
 ## Status Tracker
 - [x] Part 1 — Architecture overview & integration points — *honored by B1: aliases and `/v1/harness/task` execute through the existing routing path (`getComboForModel` → native combo machinery), never around it*
 - [x] Part 2 — Tag taxonomy (shared contract) — *shipped in B1 @ `056cc85ce` as the finer-grained vocabulary `code | research | math | reasoning | vision | search | chat | image_gen` with benchmark axes; the guide's 6-string Hermes contract is a subset — `plan` joins as an accepted alias at B2 start (see HARNESS.md reconciliation)*
-- [ ] Part 3 — Jobs store & state machine — *B3*
+- [x] Part 3 — Jobs store & state machine — *shipped in B3 (orchestrate_jobs/tasks/job_log; queued→running→done|failed, attempts cap, per-transition audit log; expired-lease requeue/work-stealing + A2A remain B3.5)*
 - [ ] Part 4 — Allocator (tags → provider-diverse assignment) — *static axis-ranked core shipped in B1 (capability aliases); health × speed × breaker multipliers land with the jobs store (B3) per Part 8*
-- [ ] Part 5 — Planner (DAG waves) — *B3*
-- [ ] Part 6 — Orchestrator API (`/v1/orchestrate/*`) — *`/quick` ✅ shipped in B2 (see HARNESS.md); `/plan`, jobs, blackboard, judge are B3*
+- [x] Part 5 — Planner (DAG waves) — *shipped in B3 (topological readiness, parallel wave fire with max_concurrency, upstream injection truncated to 800 chars, failed deps block)*
+- [ ] Part 6 — Orchestrator API (`/v1/orchestrate/*`) — *`/quick` ✅ B2; `/plan` + `GET /jobs/{id}?wait=` ✅ B3; blackboard + judge endpoints are B3.5*
 - [ ] Part 7 — Swarm manager (blackboard + A2A + judge loop) — *B3, builds on the shipped `strategy: "swarm"` combo engine*
 - [ ] Part 8 — Scoring integration & telemetry — *drift loop in B3/B5+*
 - [ ] Part 9 — Build order & acceptance tests — *followed; step 1 (tags) done*

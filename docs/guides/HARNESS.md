@@ -254,3 +254,48 @@ curl -H "Authorization: Bearer $KEY" -H "Idempotency-Key: $(uuidgen)" \
 
 `score` is the served model's axis score (0..1) for the tag's ranking axis
 (null when the served model has no evidence).
+
+## B3 — the orchestrator core (Guide 1 Parts 3+5+6, parallel mode)
+
+**Shipped in B3**: jobs store + task state machine, planner waves, and
+`POST /v1/orchestrate/plan` + `GET /v1/orchestrate/jobs/{id}`. Swarm mode
+(blackboard + A2A mailbox + judge loop, guide Part 7) lands in B3.5.
+
+### Execution model
+
+```
+POST /v1/orchestrate/plan {goal, mode:"parallel", tasks:[{id, tag, prompt, depends_on}], policy}
+   → 202 {ok, job_id, status:"active", accepted:N}
+waves: ready tasks (all depends_on done) fire in parallel (max_concurrency);
+       upstream results are injected into dependents ("Upstream outputs:" +
+       per-dep result truncated to 800 chars); transient failures requeue
+       (attempts < max_attempts), exhausted tasks fail and BLOCK dependents;
+       deadline exceeded → job failed("deadline"), partial results intact.
+GET /v1/orchestrate/jobs/{id}?wait=30 → status, waves, tasks, log tail
+```
+
+- **State machine** (guide Part 3): `queued → running → done | failed`;
+  every transition writes `orchestrate_job_log` — the audit trail.
+- **Allocator**: each task's tag dispatches through its capability alias
+  (with the job's budget tier), so provider diversity and failover come
+  from the native combo machinery; the guide's health×speed multipliers
+  ride the same failover path and get explicit scoring in B5+.
+- **Persistence**: `orchestrate_jobs` / `orchestrate_tasks` /
+  `orchestrate_job_log` (SQLite, idempotent bootstrap; the prefix avoids
+  the existing jobRegistry `jobs` table). `image_gen` tasks route via the
+  chat alias in B3 (media dispatch per-task lands with B3.5's swarm work).
+- **Idempotency-Key**: unique index at the store; replays return the
+  ORIGINAL job (200 + `replayed: true`), never re-executing.
+- **Admission validation** (replaces `validate_plan.py`): unknown tags,
+  duplicate ids, dangling `depends_on`, cycles, empty tasks, task cap 40 →
+  `400 {ok:false, errors:[…]}` so the brain re-emits the plan once,
+  corrected. `mode:"swarm"` is rejected with an explicit "next build" error.
+
+### Failure semantics (guide Part 7, B3 subset)
+
+| Behind the scenes | API says |
+|---|---|
+| Task failed, requeued, succeeded | normal `done` (attempts visible in the task row) |
+| Task exhausted attempts | task `failed`; dependents stay `queued`; job `done` (with `failure_reason`) when others finished, `failed("blocked")` when nothing can run |
+| Deadline exceeded | job `failed("deadline")`, finished results readable, queued tasks untouched |
+| Plan invalid | `400` with per-task errors (one corrected re-emit) |

@@ -162,6 +162,41 @@ Guide 1 Part 6 `/quick` + Guide 2's capability vocabulary (see
   stub dispatches incl. 503/throw paths and image_gen). All services
   417/417, openapi routes/coverage, typecheck:core green.
 
+### 5c. Harness B3 — orchestrator core (`feat(harness)`, Guide 1 Parts 3+5+6)
+
+Jobs, waves, and the plan API (parallel mode; swarm/blackboard/judge is
+B3.5). See `docs/guides/HARNESS.md` §B3:
+
+- **Jobs store** — `orchestrate_jobs` / `orchestrate_tasks` /
+  `orchestrate_job_log` (SQLite, idempotent bootstrap; prefixed to avoid
+  the jobRegistry `jobs` table). Task state machine `queued → running →
+  done | failed` with attempts, and a per-transition audit log.
+- **Planner** — topological waves: a task is ready when every `depends_on`
+  is done; ready tasks fire in parallel (max_concurrency, default 8);
+  upstream results inject into dependents (`Upstream outputs:` + per-dep
+  result truncated to 800 chars); failed deps BLOCK dependents with
+  reasons surfaced, never guessed around.
+- **Runner** — requeues transient failures up to `max_attempts` (default
+  3); deadline exceeded → job `failed("deadline")` with partial results
+  intact. Every task dispatches through its capability alias (+ job budget
+  tier) via the native chat pipeline, so provider diversity/failover come
+  from the combo machinery. Pure logic + `JobsStore` interface —
+  in-memory store for tests/embedders, SQLite store for production.
+- **API** — `POST /api/v1/orchestrate/plan` (admission validation with
+  per-task errors replacing `validate_plan.py`: unknown tags, duplicate
+  ids, dangling depends_on, cycles, empty tasks, 40-task cap;
+  Idempotency-Key replays return the ORIGINAL job, never re-executing;
+  202 + background wave loop) and `GET /api/v1/orchestrate/jobs/{id}`
+  (status, waves, per-task state/model/latency/attempts, log tail;
+  `?wait=N` long-poll). `mode:"swarm"` rejected with an explicit
+  next-build error.
+- Tests: `tests/unit/services/harness-b3.test.ts` (12 — admission matrix,
+  clamping, planner readiness/blocking/truncation, runner e2e with
+  scripted dispatches: two-wave upstream injection, requeue-then-succeed,
+  attempts-exhausted + blocked dependent, deadline partials, idempotency
+  conflict, API shape). services 429/429, openapi 702 paths / 99.3%,
+  typecheck:core clean.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

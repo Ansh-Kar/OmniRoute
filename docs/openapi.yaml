@@ -2186,6 +2186,82 @@ paths:
         "401":
           description: Unauthorized
 
+  /api/v1/orchestrate/plan:
+    post:
+      tags: [Harness]
+      summary: Submit a plan of tagged, dependency-ordered tasks (async waves)
+      description: >-
+        Fork(harness B3, Guide 1 Part 6). The brain decomposes a goal into
+        tasks (capability tags, never model ids); the orchestrator executes
+        them as parallel waves through the native routing path (tag -> alias
+        -> priority combo failover), persists every transition to the job
+        log, injects upstream outputs into dependents (truncated to 800
+        chars), requeues transient failures up to policy.max_attempts, and
+        fails the job with blocking reasons when dependencies fail. Returns
+        202 immediately; poll /v1/orchestrate/jobs/{id}. Admission
+        validation: unknown tags, duplicate ids, dangling depends_on,
+        cycles, empty tasks -> 400 with per-task errors. Idempotency-Key
+        replays return the original job without re-executing.
+        policy: budget (any|best|cheap), max_attempts (1-5, default 3),
+        max_concurrency (1-16, default 8), deadline_s (default 600),
+        task_timeout_ms (default 120000). mode "swarm" (blackboard + judge)
+        lands in the next build.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+          required: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: 'Idempotent replay of an existing job (replayed: true)'
+        "202":
+          description: 'Accepted: {ok, job_id, status: active, accepted}'
+        "400":
+          description: Invalid plan — errors[] per task
+        "401":
+          description: Unauthorized
+
+  /api/v1/orchestrate/jobs/{jobId}:
+    get:
+      tags: [Harness]
+      summary: Job status — waves, per-task state, and the job log tail
+      description: >-
+        Fork(harness B3, Guide 1 Part 6). status active|judging|done|failed;
+        waves lists each executed wave's tasks; tasks carry state, model,
+        provider, latency, attempts, error, and result; log is the audit
+        trail (last 100 entries). ?wait=N long-polls (500ms ticks, max 60s)
+        until a terminal status. 404 for unknown jobs — the brain falls
+        back to self-execution.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: wait
+          in: query
+          schema:
+            type: integer
+          required: false
+      responses:
+        "200":
+          description: Job resource
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown job
+
   /api/v1/orchestrate/quick:
     post:
       tags: [Harness]
