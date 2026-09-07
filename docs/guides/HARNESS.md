@@ -155,8 +155,11 @@ table (same ids, versioned, no family patterns). To re-seed or override:
 
 The authoritative product spec for B2+ is `docs/guides/ORCHESTRATION_SPEC.md`
 ("Guide 1" — jobs store, allocator, planner waves, `/v1/orchestrate/*`,
-blackboard/A2A/judge loop). B1 already implements its foundation; the deltas
-are recorded here so the two vocabularies can never drift silently.
+blackboard/A2A/judge loop). Its consumer-side counterpart — the Hermes brain
+contract, abstraction rules, and the end-to-end verification matrix — is
+`docs/guides/HERMES_ABSTRACTION_SPEC.md` ("Guide 2"). B1 already implements
+Guide 1's foundation; the deltas are recorded here so the two vocabularies
+can never drift silently.
 
 ### Vocabulary mapping
 
