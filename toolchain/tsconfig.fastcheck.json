@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.typecheck-core.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"],
+      "@omniroute/open-sse": ["./open-sse"],
+      "@omniroute/open-sse/*": ["./open-sse/*"],
+      "@omniroute/browser-pool": ["./packages/browser-pool/src"],
+      "playwright": ["./.fastcheck-stubs/playwright.d.ts"],
+      "@huggingface/transformers": ["./.fastcheck-stubs/huggingface.d.ts"]
+    }
+  }
+}
