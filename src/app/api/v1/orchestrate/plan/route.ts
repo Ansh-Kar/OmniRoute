@@ -77,7 +77,7 @@ export async function POST(request: Request) {
   }
 
   // Fire the wave loop in the background; the 202 returns immediately.
-  void runJob(job.jobId, { store, dispatch: chatDispatchFor(request) }).catch(() => {
+  void runJob(job.jobId, { store, dispatch: chatDispatchFor(request, job.jobId) }).catch(() => {
     try {
       store.setJobStatus(job.jobId, "failed", "runner crashed");
     } catch {

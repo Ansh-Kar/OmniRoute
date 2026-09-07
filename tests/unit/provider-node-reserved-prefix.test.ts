@@ -180,7 +180,9 @@ test("shared set size includes live REGISTRY and retired Designer + Felo + Qwen 
   // 2026-09-02: a keyless provider was removed at its operator's request, taking its id and
   // alias out of the REGISTRY walk (408 → 406).
   // #11786: SeekAi adds id "seekai" + alias "ska" (406 → 408).
-  assert.equal(RESERVED_PREFIX_COUNT, 408);
+  // Fork(parallel-execution) B4: the harness hermes/* combo namespace reserves
+  // the "hermes" prefix (408 → 409).
+  assert.equal(RESERVED_PREFIX_COUNT, 409);
 });
 
 test("isReservedProviderPrefix rejects non-string input", () => {
@@ -206,6 +208,26 @@ test("createProviderNodeSchema rejects reserved prefix 'tokenrouter'", () => {
     assert.match(prefixIssue.message, /tokenrouter/);
   }
 });
+
+// Fork(parallel-execution) B4: the hermes/* combo namespace (Guide 2 hermes
+// plugin) must not be shadowable by a custom provider node.
+test("createProviderNodeSchema rejects reserved prefix 'hermes' (B4 harness namespace)", () => {
+  const result = createProviderNodeSchema.safeParse({
+    name: "Hermes Node",
+    prefix: "hermes",
+    apiType: "chat",
+    baseUrl: "https://hermes.example.com/v1",
+  });
+  assert.equal(result.success, false);
+  if (!result.success) {
+    const prefixIssue = result.error.issues.find((i) => i.path[0] === "prefix");
+    assert.ok(prefixIssue, "expected a 'prefix' issue");
+    assert.match(prefixIssue.message, /reserved/i);
+    assert.match(prefixIssue.message, /hermes/);
+  }
+  assert.equal(isReservedProviderPrefix("hermes"), true);
+});
+
 
 test("createProviderNodeSchema rejects reserved alias 'trk'", () => {
   const result = createProviderNodeSchema.safeParse({

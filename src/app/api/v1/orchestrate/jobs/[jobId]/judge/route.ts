@@ -54,7 +54,7 @@ export async function POST(
   store.setJobStatus(jobId, "active", null);
   void runJob(jobId, {
     store,
-    dispatch: chatDispatchFor(request),
+    dispatch: chatDispatchFor(request, jobId),
     judgeCheck: typeof body.check === "string" && body.check.trim() ? body.check.trim() : undefined,
   })
     .catch(() => {

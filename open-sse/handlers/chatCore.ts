@@ -478,6 +478,11 @@ import {
   isTpmExhausted,
   isRpmExhausted,
 } from "../services/geminiRateLimitTracker.ts";
+import {
+  recordNimRequest,
+  recordNim429,
+  isNimConnectionSaturated,
+} from "../services/nimRateLimitTracker.ts";
 import { isSmallEnoughForSemanticCache } from "../utils/estimateSize.ts";
 import { getProactiveCompressionRatio } from "@/lib/db/compression";
 
@@ -3079,7 +3084,13 @@ export async function handleChatCore({
         const rawResult: ChatCoreExecutorResult = await (async () => {
           let attempts = 0;
           const isModelScopeForRequest = isModelScope();
-          const maxAttempts = isModelScopeForRequest ? 3 : provider === "codex" ? 3 : 1;
+          const maxAttempts =
+            isModelScopeForRequest ? 3 : provider === "codex" || provider === "nvidia" ? 3 : 1;
+
+          // ── NVIDIA NIM 429 key-rotation state (B4) ──────────────────────────
+          // Track excluded connection IDs for nvidia failover across attempts
+          // (Key1 → Key2 → … rotation). Mirrors codexExcludedIds.
+          const nimExcludedIds: string[] = [];
 
           // ── Codex 429 account-rotation state ─────────────────────────────────
           // Track excluded connection IDs for codex failover across attempts.
@@ -3205,6 +3216,13 @@ export async function handleChatCore({
               const res = normalizeExecutorResult(rawExecutorResult);
               trace("post_executor", { status: res?.response?.status });
 
+              // B4: record every NVIDIA NIM attempt in the per-connection
+              // sliding 60s window (drives saturation detection + the
+              // learned RPM ceiling when a 429 eventually lands).
+              if (provider === "nvidia" && attemptConnectionId) {
+                recordNimRequest(String(attemptConnectionId));
+              }
+
               if (
                 provider === "codex" &&
                 attemptConnectionId &&
@@ -3284,6 +3302,123 @@ export async function handleChatCore({
                   attempts++;
                   continue;
                 }
+              }
+
+              // ── NVIDIA NIM 429 key-rotation failover (B4) ──────────────────
+              // NIM keys (build.nvidia.com) share one RPM pool per key. On 429:
+              // honor Retry-After (or a sliding-window estimate), persist the
+              // cooldown on the connection, and rotate to a sibling nvidia
+              // key that is not already at its learned RPM ceiling.
+              if (
+                provider === "nvidia" &&
+                res.response.status === 429 &&
+                attempts < maxAttempts - 1 &&
+                // Probe-origin (test-all) 429 must not rotate accounts or
+                // persist cooldowns (#9817 parity with codex).
+                !(await shouldIsolateProbeFailures())
+              ) {
+                const nimFailedConnectionId =
+                  executionConnectionId || credentials?.connectionId || connectionId;
+                const nimHeaders = normalizeHeaders(res.response.headers);
+                const nimRetryAfterHeader = nimHeaders["retry-after"] ?? null;
+                const nimRetryAfterMs = nimRetryAfterHeader
+                  ? Number.parseFloat(nimRetryAfterHeader) * 1000
+                  : null;
+
+                // The 429 lands in the sliding window (post_executor already
+                // recorded the attempt) — learn the observed RPM ceiling and
+                // stamp a Retry-After-derived cooldown.
+                const nimCooldownMs = recordNim429(
+                  String(nimFailedConnectionId || ""),
+                  nimRetryAfterMs && nimRetryAfterMs > 0 ? nimRetryAfterMs : null
+                );
+
+                log?.warn?.(
+                  "NIM_FAILOVER",
+                  `429 on nvidia connection ${String(nimFailedConnectionId).slice(0, 8)} (attempt ${attempts + 1}/${maxAttempts}) — cooldown ${nimCooldownMs}ms, rotating key`
+                );
+
+                // Persist the cooldown so credential selection skips this key
+                // even for OTHER requests while it lasts (survives refresh).
+                if (nimFailedConnectionId) {
+                  try {
+                    const { markConnectionRateLimitedUntil } = await import(
+                      "@/lib/db/providers/rateLimit"
+                    );
+                    markConnectionRateLimitedUntil(String(nimFailedConnectionId), nimCooldownMs);
+                  } catch {
+                    // best-effort — in-memory tracker still holds the cooldown
+                  }
+                  if (!nimExcludedIds.includes(String(nimFailedConnectionId))) {
+                    nimExcludedIds.push(String(nimFailedConnectionId));
+                  }
+                }
+
+                // Fetch next available nvidia connection, preferring keys that
+                // are NOT saturated per the sliding-window tracker. Bounded by
+                // the excluded list growing on each skip.
+                let nimNextCreds = await getProviderCredentials(
+                  "nvidia",
+                  null,
+                  null,
+                  modelToCall || model || requestedModel || null,
+                  {
+                    excludeConnectionIds: [...nimExcludedIds],
+                  }
+                ).catch(() => null);
+
+                while (
+                  nimNextCreds &&
+                  nimNextCreds.connectionId &&
+                  isNimConnectionSaturated(String(nimNextCreds.connectionId))
+                ) {
+                  log?.info?.(
+                    "NIM_FAILOVER",
+                    `Skipping saturated nvidia key ${nimNextCreds.connectionId.slice(0, 8)} (sliding window at learned ceiling)`
+                  );
+                  nimExcludedIds.push(String(nimNextCreds.connectionId));
+                  nimNextCreds = await getProviderCredentials(
+                    "nvidia",
+                    null,
+                    null,
+                    modelToCall || model || requestedModel || null,
+                    {
+                      excludeConnectionIds: [...nimExcludedIds],
+                    }
+                  ).catch(() => null);
+                }
+
+                if (!nimNextCreds || nimNextCreds.allRateLimited) {
+                  log?.warn?.(
+                    "NIM_FAILOVER",
+                    "No more nvidia keys available — returning 429 with Retry-After"
+                  );
+                  if (stream) {
+                    releaseAccountSemaphore();
+                    return {
+                      ...res,
+                      _executionCredentials: execCreds,
+                    };
+                  }
+                  return {
+                    ...res,
+                    _accountSemaphoreRelease: releaseAccountSemaphore,
+                    _executionCredentials: execCreds,
+                  };
+                }
+
+                log?.info?.(
+                  "NIM_FAILOVER",
+                  `Rotating nvidia key: ${String(nimFailedConnectionId).slice(0, 8)} → ${nimNextCreds.connectionId.slice(0, 8)} (attempt ${attempts + 2}/${maxAttempts})`
+                );
+
+                // Update credentials in-place so getExecutionCredentials()
+                // picks up the new key (codex-failover pattern).
+                Object.assign(credentials, nimNextCreds);
+
+                releaseAccountSemaphore();
+                attempts++;
+                continue;
               }
 
               // Codex 429 account-rotation failover (disabled for context-relay so combo.ts can inject handoff)

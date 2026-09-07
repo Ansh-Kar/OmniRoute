@@ -12,6 +12,8 @@ import { selfFetchChat } from "@/lib/harness/selfFetch";
  *   { "model": "auto", "messages": [...] }        → same; model field ignored
  *   ?alias=code                                   → forced route, no classification
  *   ?classify_only=true                           → decision only, no execution
+ *   ?tier=auto                                    → complexity picks the budget:
+ *                                                  fast → alias:cheap, deep → alias:best
  *
  * Routing rewrites the request's model to the classification's capability
  * alias (a reserved name that resolves — through getComboForModel — to an
@@ -50,6 +52,11 @@ export async function POST(request: Request) {
   const { searchParams } = new URL(request.url);
   const classifyOnly = searchParams.get("classify_only") === "true";
   const forcedAlias = searchParams.get("alias");
+  // B4 complexity tiers (Guide 2 fast-free/deep→best): with ?tier=auto the
+  // classification's complexity picks the budget — fast → cheap (flash/mini
+  // tier), deep → best (top axis-ranked specialists) — by suffixing the
+  // alias. Default (no param) keeps B1's bare-alias behavior.
+  const tierAuto = searchParams.get("tier") === "auto";
 
   // Harness control fields never leak into the chat request.
   const { useModel: _um, classifierModel: _cm, ...chatBody } = body;
@@ -65,17 +72,23 @@ export async function POST(request: Request) {
         });
 
   const alias = forcedAlias?.trim() || classification?.alias || "chat";
+  const budget = tierAuto
+    ? (classification?.complexity ?? "fast") === "deep"
+      ? ("best" as const)
+      : ("cheap" as const)
+    : null;
   if (classifyOnly) {
     return NextResponse.json({
       object: "harness_task_decision",
       classification: classification ?? { alias, reason: "forced via ?alias=" },
       alias,
+      ...(budget ? { budget } : {}),
     });
   }
 
   const executed = await selfFetchChat({
     incoming: request,
-    body: { ...chatBody, model: alias },
+    body: { ...chatBody, model: budget ? `${alias}:${budget}` : alias },
   });
 
   // Attach the routing decision as a response header (unless the client
@@ -84,6 +97,7 @@ export async function POST(request: Request) {
   try {
     headers.set("X-Harness-Tier", classification ? classification.complexity : "forced");
     headers.set("X-Harness-Route", alias);
+    if (budget) headers.set("X-Harness-Budget", budget);
   } catch {
     // Unencodable value — skip the observability headers.
   }

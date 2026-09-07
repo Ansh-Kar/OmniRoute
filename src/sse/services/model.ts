@@ -682,5 +682,23 @@ export async function getComboForModel(modelStr) {
     // Tag index unavailable — fall through to ordinary resolution.
   }
 
+  // 3.5. Fork(parallel-execution) B4 — hermes combos: the reserved
+  // "hermes/*" namespace (Guide 2 hermes plugin, mapped onto capability
+  // aliases with fixed budget tiers: hermes/fast → chat:cheap,
+  // hermes/smart → chat:best, …). Same discipline as aliases: after DB
+  // lookups (operator combos win), exact registry names only, null falls
+  // through to ordinary resolution.
+  try {
+    const { buildHermesCombo } = await import(
+      "@omniroute/open-sse/services/harness/hermesCombos.ts"
+    );
+    const hermesCombo = buildHermesCombo(baseModelStr || modelStr);
+    if (hermesCombo) {
+      return hermesCombo;
+    }
+  } catch {
+    // Hermes registry unavailable — fall through to ordinary resolution.
+  }
+
   return null;
 }

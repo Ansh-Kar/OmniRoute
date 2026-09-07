@@ -406,6 +406,8 @@ export type TaskDispatch = (input: {
   /** The effective prompt (what an images dispatch should send). */
   prompt: string;
   timeoutMs: number;
+  /** 1-based wave number (B4 trace headers; absent for judge/mailbox). */
+  wave?: number;
 }) => Promise<
   | { ok: true; text: string; model: string | null; provider: string | null }
   | { ok: false; error: string }
@@ -606,6 +608,7 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
             messages: [{ role: "user", content: prompt }],
             prompt,
             timeoutMs: current.policy.task_timeout_ms,
+            wave,
           });
         } catch (error) {
           outcome = { ok: false, error: error instanceof Error ? error.message : "dispatch threw" };

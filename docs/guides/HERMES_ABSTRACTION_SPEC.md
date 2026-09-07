@@ -18,13 +18,13 @@
 
 ## Status Tracker
 - [ ] Part 1 — What the user must never see (abstraction rules) — *contract for the brain; the fork's counterpart is the boundary rule in `docs/guides/HARNESS.md`*
-- [ ] Part 2 — Config changes (`config.yaml`) — *blocked on Guide 1 (B2/B3): `base_url :20128` + `model: auto` already works against the fork today; the sidecar decommission waits for Guide 1 acceptance*
-- [ ] Part 3 — Orchestrator skill v2 (the brain contract, complete) — *B2 shipped `/quick` (tag, prompt, images, policy.budget, Idempotency-Key); still blocked on B3 (`/plan`, jobs, judge)*
+- [x] Part 2 — Config changes (`config.yaml`) — *fork-side complete: `base_url :20128` + `model: auto` works (B1 `/harness/task` accepts `model:"auto"`), and B4 adds the stable brain pin `model: "hermes/smart"` (`hermes/*` reserved namespace → capability alias with best tier; the full mapping table is in HARNESS.md §B4). The sidecar decommission itself is client-side*
+- [x] Part 3 — Orchestrator skill v2 (the brain contract, complete) — *B2 shipped `/quick` (tag, prompt, images, policy.budget, Idempotency-Key); B3 shipped `/plan` + jobs + judge; B3.5 shipped swarm (blackboard, bounded @ask, judge loop with max_rounds flaw acceptance); B4 completes budget discipline with `?tier=auto` (fast→cheap, deep→best) and trace headers*
 - [ ] Part 4 — Helper scripts — *blocked on B2/B3*
 - [ ] Part 5 — Telegram UX surface — *client-side, no fork work*
 - [ ] Part 6 — Cron & background jobs — *client-side; cron jobs bypass the orchestrator by design*
-- [ ] Part 7 — Failure behavior (what the user sees when things break) — *drives B3's error shapes (Guide 1 Part 6 codes: 503 tag unavailable → honest capability-unavailable reply, 504 deadline → partial results)*
-- [ ] Part 8 — End-to-end verification matrix — *the acceptance lens for B2+B3+client cutover; fork-relevant rows: 2 (/quick vision), 3 (≥2 providers), 5 (kill provider → reroute), 6 (plan waves)*
+- [x] Part 7 — Failure behavior (what the user sees when things break) — *shipped across B2–B3.5 (Guide 1 Part 6 codes: 503 tag-unavailable → honest capability reply, 504 deadline → partial results, judge flaw acceptance); B4 adds provider-level hardening: NIM 429 → Retry-After cooldown + key rotation, so a rate-limited key is a non-event for the caller*
+- [ ] Part 8 — End-to-end verification matrix — *fork-side mechanics covered by automated tests (rows 2/3/5/6: harness-b2/b3/b35 suites; row 5's reroute is native combo failover + B4 NIM rotation); the full matrix needs the live Hermes client cutover to run as written*
 - [ ] Part 9 — Rollback — *client-side*
 
 ---

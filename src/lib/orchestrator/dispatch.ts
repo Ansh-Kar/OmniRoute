@@ -63,8 +63,13 @@ export function jobFromPlan(
   };
 }
 
-export function chatDispatchFor(request: Request): TaskDispatch {
-  return async ({ tag, alias, messages, prompt, timeoutMs }) => {
+export function chatDispatchFor(request: Request, jobId?: string | null): TaskDispatch {
+  return async ({ taskId, tag, alias, messages, prompt, timeoutMs, wave }) => {
+    // B4 trace headers — X-OmniRoute-Job/Task/Wave ride the self-fetch so
+    // every orchestrator-originated upstream call is attributable in logs.
+    const traceHeaders: Record<string, string> = { "X-OmniRoute-Task": taskId };
+    if (jobId) traceHeaders["X-OmniRoute-Job"] = jobId;
+    if (wave !== undefined) traceHeaders["X-OmniRoute-Wave"] = String(wave);
     try {
       // image_gen tasks dispatch the images API with the tag index's best
       // image specialist (B3.5 per-task media dispatch).
@@ -82,6 +87,7 @@ export function chatDispatchFor(request: Request): TaskDispatch {
           incoming: request,
           body: { model: chosen.id, prompt, n: 1 },
           timeoutMs: Math.min(timeoutMs || ORCHESTRATE_DEFAULTS.taskTimeoutMs, 600_000),
+          extraHeaders: traceHeaders,
         });
         if (response.status !== 200) return { ok: false, error: `images upstream status ${response.status}` };
         const json = (await response.json()) as { data?: unknown[] };
@@ -96,6 +102,7 @@ export function chatDispatchFor(request: Request): TaskDispatch {
         incoming: request,
         body: { model: alias, stream: false, messages },
         timeoutMs: Math.min(timeoutMs || ORCHESTRATE_DEFAULTS.taskTimeoutMs, 600_000),
+        extraHeaders: traceHeaders,
       });
       if (response.status !== 200) {
         return { ok: false, error: `upstream status ${response.status}` };

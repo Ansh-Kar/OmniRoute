@@ -2418,8 +2418,10 @@ paths:
         combo over the tag index's best specialists, with native failover),
         and executed on this server's /v1/chat/completions with the caller's
         credentials. Streaming passes through verbatim. Query params:
-        alias= forces a route; classify_only=true returns the decision only.
-        Response carries X-Harness-Route and X-Harness-Tier headers.
+        alias= forces a route; classify_only=true returns the decision only;
+        tier=auto maps the complexity verdict to a budget (fast to cheap,
+        deep to best). Response carries X-Harness-Route, X-Harness-Tier, and
+        (with tier=auto) X-Harness-Budget headers.
       security:
         - BearerAuth: []
       requestBody:

@@ -33,6 +33,15 @@ import {
 
 let _reserved: Set<string> | null = null;
 
+/**
+ * Harness-reserved prefixes (fork parallel-execution, B4): "hermes" is the
+ * hermes-plugin combo namespace (hermes/fast, hermes/smart, …) and resolves
+ * at getComboForModel BEFORE provider-node prefixes, so a custom node with
+ * prefix "hermes" could never receive traffic — reject it at creation time
+ * with the same clear message as built-in collisions.
+ */
+const HARNESS_RESERVED_PREFIXES: ReadonlySet<string> = new Set(["hermes"]);
+
 function buildReservedProviderPrefixes(): Set<string> {
   if (_reserved) return _reserved;
   const reserved = new Set<string>();
@@ -45,6 +54,7 @@ function buildReservedProviderPrefixes(): Set<string> {
   }
   for (const providerId of RUNTIME_RETIRED_PROVIDER_IDS) reserved.add(providerId);
   for (const retiredId of RETIRED_COMMON_CHATGPT_WEB_PROVIDER_IDS) reserved.add(retiredId);
+  for (const harnessPrefix of HARNESS_RESERVED_PREFIXES) reserved.add(harnessPrefix);
   _reserved = reserved;
   return reserved;
 }

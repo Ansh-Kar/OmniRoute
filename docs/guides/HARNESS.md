@@ -355,3 +355,71 @@ summary falling back to the raw output.
 | Judge round failed a part, re-ran, clean | normal `done`; `verdict` + `judge_rounds` visible |
 | Judge keeps failing a part until max_rounds | `done` with `failure_reason: accepted with judge flaws…`; `task_flaw_accepted` in the log |
 | @ask went unanswered | mailbox note on the blackboard; work proceeds |
+
+## B4 — the hermes surface (Guide 2 Layer 2)
+
+Three pieces: the `hermes/*` model namespace, NVIDIA NIM 429 hardening, and
+complexity-driven budget tiers.
+
+### hermes/* combos (Guide 2's plugin, mapped)
+
+Guide 2 specifies a hermes plugin that installs stable, role-shaped model
+names for the agent's config. The fork has no runtime plugin loader, so the
+plugin is a static registry resolved at the same seam as capability aliases
+(`getComboForModel`, after DB combos, before ordinary resolution):
+
+| Name | Resolves to | Use |
+|---|---|---|
+| `hermes/fast` | `chat:cheap` | fast-free tier — drafts, bulk, cheap turns |
+| `hermes/smart` | `chat:best` | deep tier — the brain's main model |
+| `hermes/code` / `hermes/code-best` | `code` / `code:best` | coding work |
+| `hermes/reason` | `reasoning:best` | careful multi-step reasoning |
+| `hermes/plan` | `plan` | decomposition |
+| `hermes/math` / `hermes/vision` / `hermes/research` / `hermes/search` | the matching alias | specialty work |
+
+Properties inherited from the alias seam: operator-owned combos win over
+hermes names; every request re-resolves (the name tracks the index's current
+best specialists); unknown `hermes/*` names fall through to a 404, never a
+silent wrong route. `hermes` is a reserved provider prefix — no custom
+provider node can shadow the namespace (rejected at node creation).
+
+### NVIDIA NIM 429 hardening (Retry-After + sliding window + key rotation)
+
+NIM keys (provider `nvidia`, integrate.api.nvidia.com) share one RPM pool per
+key. On 429 the request now: (1) reads `Retry-After` (capped at 5 min —
+absurd values are never trusted verbatim; no header → a sliding-window
+estimate: when the oldest request ages out of the 60s window); (2) persists
+the cooldown on the connection (`markConnectionRateLimitedUntil` — survives
+token refresh, visible to credential selection for ALL requests); (3) rotates
+to a sibling nvidia key, skipping keys the tracker already knows are
+saturated. The tracker (`nimRateLimitTracker`) keeps a per-connection
+sliding 60s request window and LEARNS each key's RPM ceiling from the 429
+that proved it — so rotation prefers keys that will actually accept work
+(Key1 at ceiling → Key2 directly, instead of burning an attempt on a
+guaranteed 429). Up to 3 attempts (matching codex failover); probe-origin
+429s (test-all) never rotate or persist cooldowns (#9817 parity). When every
+key is cooling down, the 429 is returned verbatim with its Retry-After.
+
+### Complexity tiers (?tier=auto)
+
+`POST /v1/harness/task?tier=auto` maps the classification's complexity to a
+budget before execution: `fast` → `alias:cheap` (flash/mini tier),
+`deep` → `alias:best` (top axis-ranked specialists) — Guide 2's
+"fast-free / deep→best" discipline as one opt-in flag. Default (no param)
+keeps B1's bare-alias behavior. The chosen budget is exposed as
+`X-Harness-Budget` on the response (alongside `X-Harness-Tier`/
+`X-Harness-Route`) and in the `classify_only` decision.
+
+### Orchestrator trace headers
+
+Every orchestrator dispatch now rides the self-fetch with
+`X-OmniRoute-Job` / `X-OmniRoute-Task` / `X-OmniRoute-Wave` headers — each
+upstream call attributable to its job, task, and wave in request logs
+(judge/mailbox dispatches carry job + task, no wave).
+
+### What builds on this (B5+)
+
+Lease expiry/work-stealing and allocator health multipliers consume the same
+per-connection state the NIM tracker introduces; vision-judge pixel review
+consumes the image dispatch path; the drift loop (Guide 1 Part 8) scores the
+tier decisions `?tier=auto` now makes.

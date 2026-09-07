@@ -231,6 +231,39 @@ Blackboard, bounded A2A relay, and the judge loop on the B3 wave engine
   55/55; services 443/443; openapi 704 paths / 99.3%; typecheck:core
   clean.
 
+### 5e. Harness B4 — hermes surface + NIM hardening (`feat(harness)`, Guide 2 Layer 2)
+
+The Guide 2 hermes plugin mapped onto the fork's alias infra (no runtime
+plugin loader exists — a static registry IS the plugin), NVIDIA NIM 429
+hardening, complexity tiers, and orchestrator trace headers (see
+`docs/guides/HARNESS.md` §B4):
+
+- **`hermes/*` reserved model namespace** — `hermesCombos.ts` maps ten
+  role-shaped names onto capability aliases with fixed budget tiers
+  (`hermes/fast`→`chat:cheap`, `hermes/smart`→`chat:best`,
+  `hermes/code`/`code-best`/`reason`/`plan`/`math`/`vision`/`research`/
+  `search`). Resolved at `getComboForModel` step 3.5 — after DB combos
+  (operator wins), exact names only, unknown names 404 (never mis-route).
+  `hermes` added to the reserved provider prefixes (408→409): custom nodes
+  cannot shadow the namespace.
+- **NIM 429 hardening** — `nimRateLimitTracker.ts` (per-connection sliding
+  60s request windows, Retry-After-derived cooldowns capped at 5 min,
+  learned RPM ceilings) + a `nvidia` 429 failover block in `chatCore`
+  (codex-pattern): persist cooldown via `markConnectionRateLimitedUntil`
+  (survives token refresh, visible to all requests), rotate to a sibling
+  key preferring unsaturated ones, ≤3 attempts, probe-origin 429s isolated
+  (#9817 parity), all-keys-cooling → 429 passthrough with Retry-After.
+- **Complexity tiers** — `/v1/harness/task?tier=auto`: fast→`alias:cheap`,
+  deep→`alias:best`; `X-Harness-Budget` response header; default unchanged.
+- **Trace headers** — orchestrator dispatches carry `X-OmniRoute-Job`/
+  `Task`/`Wave` through the self-fetch (both chat and images paths).
+- Tests: `tests/unit/services/harness-b4.test.ts` (19 — tracker windows/
+  cooldowns/ceilings/caps/decay/reset, hermes registry+membership+
+  resolution+tier contract+reserved prefix, tier=auto route deep/fast/
+  default/forced) + reserved-prefix suite extended (hermes node rejection,
+  count 409). Combined harness 74/74; services 461/461; openapi 704
+  paths / 99.3%; typecheck:core clean.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)
