@@ -150,3 +150,42 @@ table (same ids, versioned, no family patterns). To re-seed or override:
   0..100 ballparks, a `basis` note on every entry.
 - Or supply a runtime `scoreLookup` when building the index — it outranks
   seeds and marks `source: "runtime"`.
+
+## Guide 1 reconciliation (orchestration spec ↔ shipped B1)
+
+The authoritative product spec for B2+ is `docs/guides/ORCHESTRATION_SPEC.md`
+("Guide 1" — jobs store, allocator, planner waves, `/v1/orchestrate/*`,
+blackboard/A2A/judge loop). B1 already implements its foundation; the deltas
+are recorded here so the two vocabularies can never drift silently.
+
+### Vocabulary mapping
+
+| Guide 1 contract string | Fork (B1) equivalent | Notes |
+|---|---|---|
+| `code` | `code` | identical — SWE-bench-ranked alias |
+| `vision` | `vision` | identical |
+| `image_gen` | `image_gen` | task type (media endpoint, not chat dispatch) |
+| `research` | `research` | search-grounded category, chat fallback |
+| `plan` | `reasoning` (gpqa/mmlu axes) | **B2 action**: add `plan` as an accepted task type + capability alias with the same axes, so the Hermes contract's exact strings all work; `reasoning` remains as the fine-grained internal name |
+| `chat` | `chat` | identical (LMArena-ranked) |
+| — | `math`, `search` | fork extras (MATH-500 axis; web-search category) — supersets are safe: the contract requires its strings to exist, not others to not |
+
+### Surface mapping
+
+| Guide 1 | Fork status |
+|---|---|
+| Part 2 tagging + classifier port | ✅ B1 (`benchmarkAxes.ts`, `classifier.ts`, tag index `axes:`) |
+| Part 4 allocator (static `quality[tag]` + provider round-robin) | ✅ B1 capability aliases (axis-ranked, distinct + provider-diverse) |
+| Part 6 `/v1/orchestrate/quick` | B2 — thin wrapper over B1's `/v1/harness/task` (`?alias=`) plus budget→floor mapping |
+| Part 3 jobs store + leases, Part 5 planner, Part 6 `/plan` + jobs, Part 7 swarm manager | B3 (SwarmCoordinator) — builds on the shipped `strategy: "swarm"` engine; workers stay logical dispatches (guide Part 1: everything submits through the existing routing path) |
+| Part 8 health × speed × breaker multipliers + drift | B3 allocator wiring + B5+ drift loop |
+| Idempotency-Key, deadline, `X-OmniRoute-Job/Task/Wave` headers | B3 acceptance criteria (guide Part 9 step 6) |
+
+### Boundary rule (verbatim from the guide, enforced by design)
+
+> The brain decides WHETHER to delegate; the harness decides HOW to execute.
+> The gateway must never decide to spawn sub-agents on its own.
+
+B1 complies: `/v1/harness/task` routes and executes ONE delegated request;
+fan-out only happens when the caller explicitly configures a swarm/fusion
+combo or sends `body.swarm`.
