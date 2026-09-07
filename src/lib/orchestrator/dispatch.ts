@@ -59,8 +59,24 @@ export function jobFromPlan(
       latencyMs: null,
       lastError: null,
       leaseUntil: null,
+      promptTokens: null,
+      completionTokens: null,
     })),
     log: [],
+  };
+}
+
+/** B6: normalize an OpenAI-style usage object; null when unreported. */
+function parseUsage(
+  usage: Record<string, unknown> | undefined | null
+): { prompt_tokens: number; completion_tokens: number } | null {
+  if (!usage || typeof usage !== "object") return null;
+  const prompt = Number(usage.prompt_tokens);
+  const completion = Number(usage.completion_tokens);
+  if (!Number.isFinite(prompt) && !Number.isFinite(completion)) return null;
+  return {
+    prompt_tokens: Number.isFinite(prompt) ? prompt : 0,
+    completion_tokens: Number.isFinite(completion) ? completion : 0,
   };
 }
 
@@ -94,12 +110,13 @@ export function chatDispatchFor(request: Request, jobId?: string | null): TaskDi
           extraHeaders: traceHeaders,
         });
         if (response.status !== 200) return { ok: false, error: `images upstream status ${response.status}` };
-        const json = (await response.json()) as { data?: unknown[] };
+        const json = (await response.json()) as { data?: unknown[]; usage?: Record<string, unknown> };
         return {
           ok: true,
           text: JSON.stringify({ images: Array.isArray(json.data) ? json.data : [] }),
           model: chosen.id,
           provider: chosen.provider,
+          usage: parseUsage(json.usage),
         };
       }
       const response = await selfFetchChat({

@@ -201,6 +201,8 @@ function makeJob(overrides: Partial<OrchestrateJob> = {}): OrchestrateJob {
       latencyMs: null,
       lastError: null,
       leaseUntil: null,
+      promptTokens: null,
+      completionTokens: null,
     })),
     log: [],
     ...overrides,

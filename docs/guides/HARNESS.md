@@ -483,3 +483,28 @@ in both stores.
 The breaker feed (0.2 multiplier) plugs into `scoreCandidate` when
 connection-level breaker state is exposed to the orchestrator; the drift
 loop already provides the quality side of the Guide 1 Part 8 loop.
+
+## B6 — cost budgets (cross-cutting)
+
+`policy.max_total_tokens` (default 0 = unlimited) is the job-level token
+budget across task dispatches — Guide 2's "budget discipline" made
+mechanical:
+
+- **Usage accounting** — every task dispatch's serving response reports
+  OpenAI-style usage; `prompt_tokens`/`completion_tokens` land on the task
+  row (both stores) and aggregate into `jobToApi().usage`
+  (`prompt_tokens`, `completion_tokens`, `total_tokens`,
+  `budget_tokens`). Unreported usage is never fabricated (null stays
+  null). Judge/mailbox overhead is excluded (documented).
+- **Breach semantics** — once spent tokens reach the budget, UNSTARTED
+  tasks abort with `task_budget_aborted` (in-flight dispatches finish and
+  stay visible), deferred tasks are swept (nothing left queued on a dead
+  job), and the job ends `failed` with `failure_reason:
+  "budget_exhausted"` — deadline semantics, partial results intact.
+- **Policy** — clamped to [0, 1e9]; 0 means no budget (B1–B5 behavior).
+
+### What remains (B7+)
+
+Multimodal task dispatch (search/audio/music/video endpoints), swarm
+payload compression, liveness canaries, and the breaker feed for the
+allocator's 0.2 multiplier.

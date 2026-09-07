@@ -83,6 +83,8 @@ export type OrchestratePolicy = {
   routing?: "alias" | "assigned";
   /** B5 (assigned routing): max tasks per provider per wave (default 3). */
   max_per_provider?: number;
+  /** B6: total token budget across task dispatches (prompt+completion); 0 = unlimited. */
+  max_total_tokens?: number;
 };
 
 export type OrchestratePlanBody = {
@@ -113,6 +115,9 @@ export type OrchestrateTask = {
   lastError: string | null;
   /** B5: epoch ms until the current wave's lease expires (null = not leased). */
   leaseUntil: number | null;
+  /** B6: token usage recorded from the serving response (null = not reported). */
+  promptTokens: number | null;
+  completionTokens: number | null;
 };
 
 export type OrchestrateJob = {
@@ -253,6 +258,7 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
     max_rounds: clampInt(rawPolicy.max_rounds, 1, 5, ORCHESTRATE_DEFAULTS.maxRounds),
     routing: rawPolicy.routing === "assigned" ? "assigned" : "alias",
     max_per_provider: clampInt(rawPolicy.max_per_provider, 1, 16, 3),
+    max_total_tokens: clampInt(rawPolicy.max_total_tokens, 0, 1_000_000_000, 0),
   };
   return {
     ok: true,
@@ -525,7 +531,14 @@ export type TaskDispatch = (input: {
   /** 1-based wave number (B4 trace headers; absent for judge/mailbox). */
   wave?: number;
 }) => Promise<
-  | { ok: true; text: string; model: string | null; provider: string | null }
+  | {
+      ok: true;
+      text: string;
+      model: string | null;
+      provider: string | null;
+      /** B6: token usage from the serving response (null = not reported). */
+      usage?: { prompt_tokens: number; completion_tokens: number } | null;
+    }
   | { ok: false; error: string }
 >;
 
@@ -796,10 +809,31 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
     }
 
     const leaseMs = Math.max(LEASE_MS, current.policy.task_timeout_ms + 30_000);
+    // B6 cost budget: tokens spent across task dispatches so far; once the
+    // budget is hit, UNSTARTED tasks abort (guide cross-cutting "abort
+    // unstarted tasks on breach") — in-flight dispatches finish.
+    const tokenBudget = current.policy.max_total_tokens; // 0 = unlimited
+    let usedTokens = current.tasks.reduce(
+      (sum, task) => sum + (task.promptTokens ?? 0) + (task.completionTokens ?? 0),
+      0
+    );
+    let budgetExhausted = tokenBudget > 0 && usedTokens >= tokenBudget;
+    let budgetAborted = 0;
     await Promise.all(
       executing.map(async (taskId) => {
         const task = byId.get(taskId);
         if (!task) return;
+        if (budgetExhausted) {
+          await Promise.resolve(
+            store.writeTaskTransition(jobId, taskId, {
+              state: "failed",
+              lastError: `budget exhausted (max_total_tokens ${tokenBudget})`,
+            })
+          );
+          log(taskId, "task_budget_aborted", "unstarted; token budget reached");
+          budgetAborted += 1;
+          return;
+        }
         const leased = await Promise.resolve(store.acquireLease(jobId, taskId, leaseMs, now()));
         if (!leased) return;
         log(taskId, "task_start", `attempt ${task.attempts + 1}`);
@@ -827,6 +861,12 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
 
         if (outcome.ok) {
           waveResults.push({ taskId, text: outcome.text });
+          const usage = outcome.usage ?? null;
+          if (usage) {
+            // Visible to later tasks in THIS wave (single-threaded mutations).
+            usedTokens += usage.prompt_tokens + usage.completion_tokens;
+            if (tokenBudget > 0 && usedTokens >= tokenBudget) budgetExhausted = true;
+          }
           await Promise.resolve(
             store.writeTaskTransition(jobId, taskId, {
               state: "done",
@@ -836,6 +876,8 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
               result: outcome.text,
               latencyMs: latency,
               lastError: null,
+              promptTokens: usage ? usage.prompt_tokens : null,
+              completionTokens: usage ? usage.completion_tokens : null,
             })
           );
           log(taskId, "task_done", `${latency}ms via ${outcome.model ?? alias}`);
@@ -853,6 +895,31 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
         }
       })
     );
+
+    // B6: a breached budget ends the job as failed (deadline semantics) —
+    // in-flight results stay visible in the task rows. Deferred (not yet
+    // dispatched) tasks are swept too — no task stays queued on a dead job.
+    if (budgetAborted > 0) {
+      const afterWave = await Promise.resolve(store.getJob(jobId));
+      const deferred = afterWave?.tasks.filter((task) => task.state === "queued") ?? [];
+      for (const task of deferred) {
+        await Promise.resolve(
+          store.writeTaskTransition(jobId, task.id, {
+            state: "failed",
+            lastError: `budget exhausted (max_total_tokens ${tokenBudget})`,
+          })
+        );
+        log(task.id, "task_budget_aborted", "unstarted; token budget reached");
+        budgetAborted += 1;
+      }
+      log(
+        null,
+        "job_budget_exhausted",
+        `${budgetAborted} task(s) aborted unstarted; ${usedTokens} tokens used of ${tokenBudget}`
+      );
+      await Promise.resolve(store.setJobStatus(jobId, "failed", "budget_exhausted"));
+      return;
+    }
 
     // ── Post-wave swarm bookkeeping: blackboard + bounded mailbox ──
     if (current.mode === "swarm" && waveResults.length > 0) {
@@ -944,6 +1011,9 @@ export function jobToApi(job: OrchestrateJob): Record<string, unknown> {
       waves.set(task.wave, [...(waves.get(task.wave) ?? []), task.id]);
     }
   }
+  // B6: token usage across task dispatches (judge/mailbox overhead excluded).
+  const promptTokens = job.tasks.reduce((sum, task) => sum + (task.promptTokens ?? 0), 0);
+  const completionTokens = job.tasks.reduce((sum, task) => sum + (task.completionTokens ?? 0), 0);
   return {
     job_id: job.jobId,
     status: job.status,
@@ -952,6 +1022,12 @@ export function jobToApi(job: OrchestrateJob): Record<string, unknown> {
     failure_reason: job.failureReason,
     judge_rounds: job.judgeRounds,
     blackboard: job.blackboard ?? null,
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens,
+      budget_tokens: job.policy.max_total_tokens > 0 ? job.policy.max_total_tokens : null,
+    },
     waves: [...waves.entries()].sort((a, b) => a[0] - b[0]).map(([n, tasks]) => ({ n, tasks })),
     tasks: job.tasks.map((task) => ({
       id: task.id,
@@ -963,6 +1039,8 @@ export function jobToApi(job: OrchestrateJob): Record<string, unknown> {
       wave: task.wave,
       attempts: task.attempts,
       latency_ms: task.latencyMs,
+      prompt_tokens: task.promptTokens,
+      completion_tokens: task.completionTokens,
       verdict: task.verdict,
       error: task.lastError,
       result: task.result,

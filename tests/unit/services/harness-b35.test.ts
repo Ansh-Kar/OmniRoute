@@ -82,6 +82,8 @@ function makeSwarmJob(overrides: Partial<OrchestrateJob> = {}): OrchestrateJob {
       latencyMs: null,
       lastError: null,
       leaseUntil: null,
+      promptTokens: null,
+      completionTokens: null,
     })),
     log: [],
     ...overrides,
@@ -346,6 +348,8 @@ test("runner: image tasks skip the swarm wrapper", async () => {
         latencyMs: null,
         lastError: null,
         leaseUntil: null,
+      promptTokens: null,
+      completionTokens: null,
       },
     ],
   };

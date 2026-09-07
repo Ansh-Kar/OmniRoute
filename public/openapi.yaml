@@ -1733,7 +1733,10 @@ paths:
         max_concurrency (1-16, default 8), deadline_s (default 600),
         task_timeout_ms (default 120000), routing (alias|assigned, default
         alias; assigned = allocator water-filling per Guide 1 Part 4),
-        max_per_provider (1-16, default 3, assigned routing). mode "swarm"
+        max_per_provider (1-16, default 3, assigned routing),
+        max_total_tokens (0 = unlimited; on breach unstarted tasks abort
+        with budget_exhausted and the job fails — partial results stay
+        visible; usage reported per task and job-wide). mode "swarm"
         (blackboard + judge) lands in the next build.
       security:
         - BearerAuth: []

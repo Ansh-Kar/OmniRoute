@@ -89,6 +89,14 @@ export function ensureOrchestrateTables(): void {
   } catch {
     // Column already present.
   }
+  // B6: per-task token usage from the serving responses.
+  for (const column of ["prompt_tokens INTEGER", "completion_tokens INTEGER"]) {
+    try {
+      db.exec(`ALTER TABLE orchestrate_tasks ADD COLUMN ${column}`);
+    } catch {
+      // Column already present.
+    }
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS orchestrate_model_drift (
       model TEXT PRIMARY KEY,
@@ -116,6 +124,8 @@ function mapTask(row: any): OrchestrateTask {
     latencyMs: row.latency_ms ?? null,
     lastError: row.last_error ?? null,
     leaseUntil: row.lease_until ?? null,
+    promptTokens: row.prompt_tokens ?? null,
+    completionTokens: row.completion_tokens ?? null,
   };
 }
 
@@ -335,6 +345,8 @@ export class SqliteJobsStore {
       ["latencyMs", "latency_ms"],
       ["lastError", "last_error"],
       ["leaseUntil", "lease_until"],
+      ["promptTokens", "prompt_tokens"],
+      ["completionTokens", "completion_tokens"],
     ];
     for (const [field, column] of columns) {
       if (field in patch) {

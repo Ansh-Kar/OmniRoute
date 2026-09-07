@@ -296,6 +296,22 @@ static ranks (see `docs/guides/HARNESS.md` §B5):
   dispatch, lease-expiry recovery, judge drift write-back). Combined
   harness+regression batch 124/124; openapi 704/99.3%; fastcheck tsc clean.
 
+### 5g. Harness B6 — cost budgets (`feat(harness)`, cross-cutting)
+
+`policy.max_total_tokens` + per-task token usage accounting (see
+`docs/guides/HARNESS.md` §B6):
+
+- **Usage** — dispatch outcomes carry OpenAI-style usage; per-task
+  `prompt_tokens`/`completion_tokens` columns (both stores) aggregate into
+  `jobToApi().usage`; unreported usage never fabricated.
+- **Breach** — unstarted tasks abort (`task_budget_aborted`), deferred
+  tasks swept, job fails `budget_exhausted` with partial results visible;
+  deadline semantics; default 0 = unlimited (unchanged behavior).
+- Tests: `tests/unit/services/harness-b6.test.ts` (7 — policy clamps,
+  usage accounting + jobToApi aggregation, SQLite round-trip parity,
+  budget abort e2e incl. deferred sweep, no-budget and
+  usage-less-dispatch guards). Combined batch 131/131; openapi 704/99.3%.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)
