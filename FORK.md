@@ -378,6 +378,18 @@ score math, feed semantics incl. persisted fallback + no-creation,
 runner steering away from an open provider). Combined batch 162/162;
 openapi 706/99.3%; fastcheck tsc clean.
 
+### 5k. Docs — USAGE.md + JOURNEY.md (`docs(fork)`)
+
+`docs/guides/USAGE.md`: the consolidated endpoint syntax — model:"auto"
+and the alias/hermes vocabularies, /quick (incl. retry_503_after_ms),
+/plan (tags, modality rules, full policy table), jobs polling shape and
+failure reasons, /harness/task variants, /v1/models/best, the canary
+routes, trace headers, and task-state semantics.
+`docs/guides/JOURNEY.md`: the decision log — per-build rationale,
+rejected alternatives, and the process scars (drift-penalty rounding,
+silent tarball links, box-bound tsc). The workspace README gained the
+same usage section and a journey pointer.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)
