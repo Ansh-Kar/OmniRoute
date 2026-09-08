@@ -69,6 +69,13 @@ export type OrchestrateTaskSpec = {
   tag: string;
   prompt: string;
   depends_on?: string[];
+  /**
+   * B7 multimodal: which endpoint family executes the task. Default is the
+   * tag's implied modality ("text" for chat tags; media tags imply their
+   * media modality). "search" on a chat tag makes the task a literal
+   * /v1/search web-search dispatch.
+   */
+  modality?: string;
 };
 
 export type OrchestratePolicy = {
@@ -98,10 +105,49 @@ export type OrchestratePlanBody = {
 export type JobStatus = "active" | "judging" | "done" | "failed";
 export type TaskState = "queued" | "running" | "done" | "failed";
 
+// ── B7 multimodal dispatch ─────────────────────────────────────────────────
+/** Endpoint family a task dispatches to. Chat tags default to "text". */
+export type TaskModality = "text" | "image" | "search" | "speech" | "music" | "video";
+
+export const TASK_MODALITIES = ["text", "image", "search", "speech", "music", "video"] as const;
+
+/** Media tags imply their modality — the dispatch layer never guesses. */
+export const MODALITY_BY_TAG: Record<TaskType, TaskModality> = {
+  code: "text",
+  research: "text",
+  math: "text",
+  reasoning: "text",
+  plan: "text",
+  vision: "text",
+  search: "text",
+  chat: "text",
+  image_gen: "image",
+  audio_speech: "speech",
+  music_gen: "music",
+  video_gen: "video",
+};
+
+/** Media (non-chat) modalities — skip swarm wrappers, can't answer @ask. */
+export function isMediaModality(modality: TaskModality): boolean {
+  return modality !== "text" && modality !== "search";
+}
+
+/**
+ * Resolve a task's modality. New jobs always carry an explicit modality
+ * (validatePlan); rows persisted pre-B7 and stale in-memory jobs don't —
+ * the tag's implied modality is the exact pre-B7 behavior (image_gen was
+ * the only media dispatch).
+ */
+export function taskModalityOf(task: { tag: TaskType; modality?: TaskModality }): TaskModality {
+  return task.modality ?? MODALITY_BY_TAG[task.tag];
+}
+
 export type OrchestrateTask = {
   jobId: string;
   id: string;
   tag: TaskType;
+  /** B7: endpoint family this task dispatches to (persisted, surfaced in jobToApi). */
+  modality: TaskModality;
   prompt: string;
   dependsOn: string[];
   state: TaskState;
@@ -159,7 +205,7 @@ export const ORCHESTRATE_MAX_TASKS = 40;
 // ── Admission validation (replaces validate_plan.py) ────────────────────────
 
 export type PlanValidation =
-  | { ok: true; tasks: Array<OrchestrateTaskSpec & { tag: TaskType }>; mode: "parallel" | "swarm"; policy: Required<OrchestratePolicy>; goal: string; blackboard: Record<string, unknown> | null }
+  | { ok: true; tasks: Array<OrchestrateTaskSpec & { tag: TaskType; modality: TaskModality }>; mode: "parallel" | "swarm"; policy: Required<OrchestratePolicy>; goal: string; blackboard: Record<string, unknown> | null }
   | { ok: false; errors: string[] };
 
 export function validatePlan(body: OrchestratePlanBody): PlanValidation {
@@ -190,7 +236,7 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
 
   const seen = new Set<string>();
   const ids = new Set<string>();
-  const normalized: Array<OrchestrateTaskSpec & { tag: TaskType }> = [];
+  const normalized: Array<OrchestrateTaskSpec & { tag: TaskType; modality: TaskModality }> = [];
   for (const [index, task] of tasks.entries()) {
     if (!task || typeof task !== "object") {
       errors.push(`tasks[${index}] must be an object`);
@@ -211,8 +257,42 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
       errors.push(`tasks[${index}] ("${task.id}"): prompt must be a non-empty string`);
       continue;
     }
+    // B7: modality — default is the tag's implied modality. Media tags force
+    // theirs (no "text" dispatch for image_gen); "search" (literal /v1/search)
+    // is only meaningful on chat tags; other explicit values must match.
+    const implied = MODALITY_BY_TAG[task.tag];
+    let modality = implied;
+    if (task.modality !== undefined) {
+      if (typeof task.modality !== "string" || !(TASK_MODALITIES as readonly string[]).includes(task.modality)) {
+        errors.push(
+          `tasks[${index}] ("${task.id}"): unknown modality "${String(task.modality)}" (vocabulary: ${TASK_MODALITIES.join(", ")})`
+        );
+        continue;
+      }
+      const requested = task.modality as TaskModality;
+      if (implied !== "text") {
+        if (requested !== implied) {
+          errors.push(
+            `tasks[${index}] ("${task.id}"): modality "${requested}" is incompatible with tag "${task.tag}" (implies "${implied}")`
+          );
+          continue;
+        }
+      } else if (requested !== "text" && requested !== "search") {
+        errors.push(
+          `tasks[${index}] ("${task.id}"): modality "${requested}" requires its media tag (image_gen / audio_speech / music_gen / video_gen); got "${task.tag}"`
+        );
+        continue;
+      }
+      modality = requested;
+    }
     const dependsOn = Array.isArray(task.depends_on) ? task.depends_on : [];
-    normalized.push({ ...task, tag: task.tag, depends_on: dependsOn, prompt: task.prompt });
+    normalized.push({
+      ...task,
+      tag: task.tag,
+      modality,
+      depends_on: dependsOn,
+      prompt: task.prompt,
+    });
   }
 
   // Dangling depends_on + cycle detection (Kahn).
@@ -520,6 +600,8 @@ export class InMemoryJobsStore implements JobsStore {
 export type TaskDispatch = (input: {
   taskId: string;
   tag: TaskType;
+  /** B7: endpoint family for this dispatch (task.modality; media+search route to their endpoint). */
+  modality: TaskModality;
   alias: string;
   /** B5: allocator-picked literal model (assigned routing); null → dispatch the alias. */
   assignedModel?: string | null;
@@ -552,7 +634,11 @@ export type RunnerDeps = {
 };
 
 export function aliasForTag(tag: TaskType, budget: string): string {
-  if (tag === "image_gen") return "image_gen"; // resolved by the images adapter
+  // B7: media tags self-alias — the dispatch layer resolves the model from
+  // the tag index's registry subcategory, not the chat combo machinery.
+  if (tag === "image_gen" || tag === "audio_speech" || tag === "music_gen" || tag === "video_gen") {
+    return tag;
+  }
   return budget === "any" ? tag : `${tag}:${budget}`;
 }
 
@@ -593,14 +679,16 @@ export function candidatesForTag(tag: TaskType, budget: string): AllocatorCandid
 
 type LogFn = (taskId: string | null, event: string, detail?: string | null) => void;
 
-/** Wrap a chat task's prompt with the swarm shared context (image tasks skip it). */
+/** Wrap a chat task's prompt with the swarm shared context (media/search tasks skip it). */
 function effectivePrompt(
   job: OrchestrateJob,
   task: OrchestrateTask,
   byId: Map<string, OrchestrateTask>
 ): string {
-  if (job.mode !== "swarm" || task.tag === "image_gen") {
-    // Parallel mode / image tasks: upstream injection only.
+  if (job.mode !== "swarm" || isMediaModality(taskModalityOf(task)) || taskModalityOf(task) === "search") {
+    // Parallel mode / media+search tasks: upstream injection only. Search
+    // queries are clamped to the endpoint's 500-char limit at dispatch —
+    // the swarm wrapper would only eat that budget.
     const messages = buildTaskMessages(task, byId);
     return messages[0].content;
   }
@@ -659,6 +747,7 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
       const outcome = await dispatch({
         taskId: "__judge",
         tag: judgeInput.tag,
+        modality: "text",
         alias: aliasForTag(judgeInput.tag, job.policy.budget),
         messages: judgeInput.messages,
         prompt: judgeInput.messages[0].content,
@@ -842,11 +931,13 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
         const alias = aliasForTag(task.tag, current.policy.budget);
         const assignment = assignments.get(taskId);
         const started = now();
+        const modality = taskModalityOf(task);
         let outcome: Awaited<ReturnType<TaskDispatch>>;
         try {
           outcome = await dispatch({
             taskId,
             tag: task.tag,
+            modality,
             alias,
             assignedModel: assignment?.candidate.model ?? null,
             messages: [{ role: "user", content: prompt }],
@@ -946,6 +1037,12 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
           log(taskId, "mailbox_skipped", `@ask target "${ask.to}" has no completed output`);
           continue;
         }
+        // B7: media tasks have no chat model behind them — @ask would
+        // dispatch a question to an images/music/speech endpoint. Skip.
+        if (isMediaModality(taskModalityOf(target))) {
+          log(taskId, "mailbox_skipped", `@ask target "${ask.to}" is a media task (${taskModalityOf(target)}) and cannot answer`);
+          continue;
+        }
         asked.add(taskId);
         const answer = await relayQuestion(jobId, ask, target, deps, log);
         const updated = await Promise.resolve(store.getJob(jobId));
@@ -971,6 +1068,7 @@ async function relayQuestion(
     const outcome = await dispatch({
       taskId: `__mailbox_${ask.from}`,
       tag: target.tag,
+      modality: "text",
       alias: aliasForTag(target.tag, "any"),
       messages: [{ role: "user", content: buildAskPrompt(ask, target) }],
       prompt: buildAskPrompt(ask, target),
@@ -1032,6 +1130,7 @@ export function jobToApi(job: OrchestrateJob): Record<string, unknown> {
     tasks: job.tasks.map((task) => ({
       id: task.id,
       tag: task.tag,
+      modality: task.modality,
       state: task.state,
       depends_on: task.dependsOn,
       model: task.assignedModel,

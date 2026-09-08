@@ -174,9 +174,20 @@ export function buildJudgeMessages(
       return `### ${task.id} (${task.tag})\n${truncate(summary ?? task.result ?? "", 600)}`;
     })
     .join("\n\n");
-  const hasImageTasks = job.tasks.some((task) => task.tag === "image_gen");
+  // B7: image/video outputs need a vision-capable judge (it inspects the
+  // generated media envelope); speech/music/search stay text-judged. The
+  // tags are checked directly (validation guarantees image/video modality
+  // only ever pairs with image_gen/video_gen) — this also covers pre-B7
+  // rows that carry no modality at all.
+  const hasVisualTasks = job.tasks.some(
+    (task) =>
+      task.modality === "image" ||
+      task.modality === "video" ||
+      task.tag === "image_gen" ||
+      task.tag === "video_gen"
+  );
   return {
-    tag: hasImageTasks ? "vision" : "plan",
+    tag: hasVisualTasks ? "vision" : "plan",
     messages: [
       {
         role: "user",

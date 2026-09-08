@@ -508,3 +508,37 @@ mechanical:
 Multimodal task dispatch (search/audio/music/video endpoints), swarm
 payload compression, liveness canaries, and the breaker feed for the
 allocator's 0.2 multiplier.
+
+## B7 — multimodal task dispatch (cross-cutting)
+
+Tasks declare their endpoint family with `modality`
+(`text|image|search|speech|music|video`); media tags imply theirs
+(`image_gen`→image, `audio_speech`→speech, `music_gen`→music,
+`video_gen`→video — three new capability tags), and `modality: "search"`
+on any chat tag makes the task a literal `/v1/search` web-search
+dispatch (no model — the route picks provider/credentials):
+
+- **Dispatch** — media modalities route to their generation endpoint
+  (`/v1/images`, `/v1/audio/speech`, `/v1/music/generations`,
+  `/v1/videos/generations`) with the tag index's best specialist of that
+  family (B5 assigned-routing picks still honored). `search` dispatches
+  `/v1/search` with the prompt as query (clamped to the 500-char schema
+  limit).
+- **Result envelopes** — media results land on the task row as
+  self-describing JSON (`{images|search|speech|music|video: {...}}`), so
+  upstream injection, the blackboard, and the judge all see structured
+  output. Binary speech audio embeds base64 when ≤192 KB (digest +
+  metadata otherwise); oversized music/video payloads keep sha256 +
+  `truncated: true` instead of bloating the job record.
+- **Semantics** — media tasks skip the swarm shared-context wrapper;
+  media tasks cannot answer `@ask` (mailbox_skipped with a reason); a
+  job with image/video outputs picks a vision-capable judge. `search`
+  queries skip the wrapper too (it would only eat the 500-char budget).
+- **Back-compat** — rows persisted pre-B7 carry no modality and resolve
+  to the tag's implied modality at read time (exactly the historical
+  behavior: `image_gen` was the only media dispatch).
+
+### What remains (B8+)
+
+Compression on swarm payloads, liveness canaries, benchmark wiring, and
+the breaker feed for the allocator's 0.2 multiplier.

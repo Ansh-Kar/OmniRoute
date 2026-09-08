@@ -312,6 +312,32 @@ static ranks (see `docs/guides/HARNESS.md` §B5):
   budget abort e2e incl. deferred sweep, no-budget and
   usage-less-dispatch guards). Combined batch 131/131; openapi 704/99.3%.
 
+### 5h. Harness B7 — multimodal task dispatch (`feat(harness)`, cross-cutting)
+
+Task `modality` + three new media capability tags (see
+`docs/guides/HARNESS.md` §B7):
+
+- **Modality** — `text|image|search|speech|music|video`; media tags
+  imply theirs (`audio_speech`/`music_gen`/`video_gen` are new tags with
+  registry subcategories `text-to-speech`/`music-gen`/`video-gen`);
+  `search` on a chat tag = literal `/v1/search` dispatch. Validation
+  enforces tag/modality compatibility.
+- **Dispatch** — media endpoints via self-fetch (speech returns audio
+  bytes → base64 envelope ≤192 KB, digest beyond; music/video JSON
+  envelopes capped at 2 MB with sha256 + `truncated`); search results
+  envelope carries query + results.
+- **Semantics** — media tasks skip swarm wrappers, can't answer @ask
+  (`mailbox_skipped`), image/video jobs get a vision judge;
+  `task.modality` in jobToApi; SQLite column with tag-implied fallback
+  for pre-B7 rows.
+- Tests: `tests/unit/services/harness-b7.test.ts` (9 — validation
+  compatibility rules, runner plumbing, mailbox skip, envelope caps,
+  SQLite round-trip). Combined batch 140/140; openapi 704/99.3%.
+- Toolchain: `min-deps.package.json` js-yaml pin corrected
+  (`^5.4.1` → `^4.1.0` — v5 doesn't exist; the stale tarball shipped
+  3.15.2 and broke the openapi check scripts' named imports); deps
+  tarball rebuilt with js-yaml 4.3.2.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

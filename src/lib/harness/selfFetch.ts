@@ -95,3 +95,49 @@ export async function selfFetchImages({
 }: Omit<SelfFetchChatOptions, "body"> & { body: Record<string, unknown> }): Promise<Response> {
   return selfFetchJson("/api/v1/images/generations", incoming, body, extraHeaders, timeoutMs);
 }
+
+/**
+ * B7 multimodal self-fetches — the orchestrator's media task dispatches.
+ * All share the credential-forwarding contract (the incoming request's
+ * auth rides the internal fetch, so admission/budget policies apply).
+ */
+
+/** POST /v1/search — literal web search (no model; provider selected by the route). */
+export async function selfFetchSearch({
+  incoming,
+  body,
+  timeoutMs = 120_000,
+  extraHeaders,
+}: Omit<SelfFetchChatOptions, "body"> & { body: Record<string, unknown> }): Promise<Response> {
+  return selfFetchJson("/api/v1/search", incoming, body, extraHeaders, timeoutMs);
+}
+
+/** POST /v1/audio/speech — text-to-speech; the response is audio bytes, not JSON. */
+export async function selfFetchSpeech({
+  incoming,
+  body,
+  timeoutMs = 300_000,
+  extraHeaders,
+}: Omit<SelfFetchChatOptions, "body"> & { body: Record<string, unknown> }): Promise<Response> {
+  return selfFetchJson("/api/v1/audio/speech", incoming, body, extraHeaders, timeoutMs);
+}
+
+/** POST /v1/music/generations — music generation. */
+export async function selfFetchMusic({
+  incoming,
+  body,
+  timeoutMs = 600_000,
+  extraHeaders,
+}: Omit<SelfFetchChatOptions, "body"> & { body: Record<string, unknown> }): Promise<Response> {
+  return selfFetchJson("/api/v1/music/generations", incoming, body, extraHeaders, timeoutMs);
+}
+
+/** POST /v1/videos/generations — video generation. */
+export async function selfFetchVideos({
+  incoming,
+  body,
+  timeoutMs = 600_000,
+  extraHeaders,
+}: Omit<SelfFetchChatOptions, "body"> & { body: Record<string, unknown> }): Promise<Response> {
+  return selfFetchJson("/api/v1/videos/generations", incoming, body, extraHeaders, timeoutMs);
+}

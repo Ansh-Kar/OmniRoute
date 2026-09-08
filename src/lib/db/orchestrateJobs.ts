@@ -26,6 +26,7 @@ import {
   QUALITY_FLOOR,
   type ModelStat,
 } from "@omniroute/open-sse/services/harness/allocator.ts";
+import { MODALITY_BY_TAG, type TaskModality, type TaskType } from "@omniroute/open-sse/services/harness/orchestrator.ts";
 
 let ensured = false;
 
@@ -97,6 +98,15 @@ export function ensureOrchestrateTables(): void {
       // Column already present.
     }
   }
+  // B7: multimodal dispatch — the endpoint family executing the task.
+  // Nullable on purpose: rows persisted pre-B7 stay NULL and resolve to the
+  // tag's implied modality at read time (taskFromRow), which is the exact
+  // pre-B7 behavior (image_gen was the only media dispatch).
+  try {
+    db.exec(`ALTER TABLE orchestrate_tasks ADD COLUMN modality TEXT`);
+  } catch {
+    // Column already present.
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS orchestrate_model_drift (
       model TEXT PRIMARY KEY,
@@ -113,6 +123,7 @@ function mapTask(row: any): OrchestrateTask {
     id: row.task_id,
     tag: row.tag,
     prompt: row.prompt,
+    modality: row.modality ?? (MODALITY_BY_TAG[row.tag as TaskType] ?? "text"),
     dependsOn: JSON.parse(row.depends_on ?? "[]") as string[],
     state: row.state as TaskState,
     attempts: row.attempts,
@@ -177,11 +188,18 @@ export class SqliteJobsStore {
     );
     const insertTask = db.prepare(
       `INSERT INTO orchestrate_tasks (
-         job_id, task_id, tag, prompt, depends_on, state, attempts
-       ) VALUES (?, ?, ?, ?, ?, 'queued', 0)`
+         job_id, task_id, tag, modality, prompt, depends_on, state, attempts
+       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0)`
     );
     for (const task of job.tasks) {
-      insertTask.run(job.jobId, task.id, task.tag, task.prompt, JSON.stringify(task.dependsOn));
+      insertTask.run(
+        job.jobId,
+        task.id,
+        task.tag,
+        task.modality ?? MODALITY_BY_TAG[task.tag],
+        task.prompt,
+        JSON.stringify(task.dependsOn)
+      );
     }
     const insertLog = db.prepare(
       `INSERT INTO orchestrate_job_log (timestamp, job_id, task_id, event, detail)

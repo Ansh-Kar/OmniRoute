@@ -201,6 +201,9 @@ export const TASK_TYPES = [
   "search",
   "chat",
   "image_gen",
+  "audio_speech",
+  "music_gen",
+  "video_gen",
 ] as const;
 
 export type TaskType = (typeof TASK_TYPES)[number];
@@ -280,5 +283,23 @@ export const TASK_TYPE_TO_QUERY: Record<
     category: "image-gen",
     axes: [],
     description: "image generation (media endpoint, not chat dispatch)",
+  },
+  // B7 multimodal task types — media endpoints, not chat dispatch. The tag
+  // index ranks each registry subcategory; the orchestrator's dispatch layer
+  // sends the task to the matching media endpoint (see dispatch.ts).
+  audio_speech: {
+    category: "text-to-speech",
+    axes: [],
+    description: "text-to-speech synthesis (media endpoint, not chat dispatch)",
+  },
+  music_gen: {
+    category: "music-gen",
+    axes: [],
+    description: "music generation (media endpoint, not chat dispatch)",
+  },
+  video_gen: {
+    category: "video-gen",
+    axes: [],
+    description: "video generation (media endpoint, not chat dispatch)",
   },
 };

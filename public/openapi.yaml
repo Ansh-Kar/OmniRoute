@@ -1738,6 +1738,13 @@ paths:
         with budget_exhausted and the job fails — partial results stay
         visible; usage reported per task and job-wide). mode "swarm"
         (blackboard + judge) lands in the next build.
+        Tasks carry an optional modality (text|image|search|speech|music|
+        video, B7): media tags imply theirs (image_gen->image,
+        audio_speech->speech, music_gen->music, video_gen->video);
+        modality "search" on a chat tag dispatches the task literally to
+        /v1/search (web search, no model). Media results land as JSON
+        envelopes ({images|search|speech|music|video: ...}) on the task
+        row and in job responses (task.modality).
       security:
         - BearerAuth: []
       parameters:
