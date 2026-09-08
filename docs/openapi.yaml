@@ -2135,6 +2135,66 @@ paths:
         "401":
           description: Unauthorized
 
+  /api/v1/models/canaries:
+    get:
+      tags: [Models]
+      summary: Liveness-canary snapshot (rankings skip fresh-dead models)
+      description: >-
+        Fork(harness B8, roadmap §6). Process-local canary state: per-model
+        {alive, lastCheckAt, latencyMs, consecutiveFailures, lastError},
+        the dead rules config (2 consecutive failures to mark dead; dead
+        verdicts stop filtering after 10 minutes), and the current skip
+        list. Empty until canary rounds run (POST
+        /api/v1/models/canaries/check) — an empty snapshot means "no
+        canary data", never "everything is dead"; rankings behave exactly
+        as before.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Canary snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          description: Unauthorized
+
+  /api/v1/models/canaries/check:
+    post:
+      tags: [Models]
+      summary: Run one canary round now (HTTP reachability probe)
+      description: >-
+        Fork(harness B8). Probes each provider behind the tag index's
+        current candidates for HTTP reachability — ANY status answer
+        (401/403/404 included) counts as alive; only DNS/refused/timeout
+        count as failures. Two consecutive failures mark a provider dead
+        (rankings skip it while the verdict is fresh); stale verdicts stop
+        filtering. One provider per round-robin head per call (?limit=,
+        default 12, max 40) — call repeatedly to rotate coverage. No
+        background timer runs uninvited; operators/cron drive the cadence.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 40
+            default: 12
+      responses:
+        "200":
+          description: Round summary (checked, markedDead, recovered, failures, dead_now)
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          description: Unauthorized
+        "500":
+          description: Round failed
+
   /api/v1/models/best:
     get:
       tags: [Models]
@@ -2278,7 +2338,10 @@ paths:
         video, B7): media tags imply theirs (image_gen->image,
         audio_speech->speech, music_gen->music, video_gen->video);
         modality "search" on a chat tag dispatches the task literally to
-        /v1/search (web search, no model). Media results land as JSON
+        /v1/search (web search, no model). policy.compress_context
+        (default false) runs the Caveman engine over each swarm worker's
+        shared context before fan-out (code blocks preserved; per-task
+        context_compressed log). Media results land as JSON
         envelopes ({images|search|speech|music|video: ...}) on the task
         row and in job responses (task.modality).
       security:
@@ -2352,6 +2415,10 @@ paths:
         Idempotency-Key header is forwarded — the chat pipeline's native
         replay applies. Errors: 400 invalid_request with per-field details;
         503 no_active_models when a capability has no live candidates.
+        policy.retry_503_after_ms (0-120000, default 0): Guide 2's
+        "retry once after 20s" — when the tag's candidates exhaust, wait
+        and retry ONCE before the honest 503 (retried: true on the
+        outcome).
       security:
         - BearerAuth: []
       parameters:

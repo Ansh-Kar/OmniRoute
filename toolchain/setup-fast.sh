@@ -65,6 +65,14 @@ echo "[setup] linking node_modules → /work/minstall"
 mkdir -p node_modules/@omniroute
 ln -sfn /work/minstall/node_modules/* node_modules/ 2>/dev/null
 ln -sfn /work/minstall/node_modules/.bin node_modules/.bin
+# Guard (B8): a broken tarball layout (e.g. a nested minstall/ prefix) leaves
+# the glob unexpanded and links nothing — the old script failed SILENTLY here.
+# tsx + tsc presence is the link's actual contract; fail loudly instead.
+if [ ! -e node_modules/tsx/package.json ] || [ ! -e node_modules/.bin/tsc ]; then
+  echo "[setup] FATAL: node_modules links are broken (tsx/tsc missing)." >&2
+  echo "[setup] The deps tarball layout is wrong — expected node_modules/ at archive root." >&2
+  exit 1
+fi
 ln -sfn "$ROOT/open-sse" node_modules/@omniroute/open-sse
 
 # ── 4. fastcheck kit (typecheck wrapper; local-only, never committed) ───────

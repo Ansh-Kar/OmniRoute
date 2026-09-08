@@ -542,3 +542,45 @@ dispatch (no model — the route picks provider/credentials):
 
 Compression on swarm payloads, liveness canaries, benchmark wiring, and
 the breaker feed for the allocator's 0.2 multiplier.
+
+## B8 — cross-cutting hardening (compression, canaries, benchmarks, Guide 2)
+
+Four roadmap §6 items plus the Guide 2 fork-side acceptance mechanics:
+
+- **Swarm context compression** — `policy.compress_context` (default
+  false) runs the Caveman engine (lite intensity, code blocks preserved)
+  over each swarm worker's shared context before fan-out; savings
+  multiply across N workers. Per-task `context_compressed` log carries
+  the token delta; compression never breaks a dispatch (verbatim
+  fallback).
+- **Liveness canaries** — `modelTags/canary.ts`: probe providers, mark a
+  model dead only after 2 consecutive failures, and let
+  `findModelsByTags` skip fresh-dead entries. Conservative by
+  construction: empty state = zero behavior change; dead verdicts older
+  than 10 minutes stop filtering (a canary outage never culls a model).
+  `GET /v1/models/canaries` (snapshot), `POST /v1/models/canaries/check`
+  (run one round — HTTP reachability: any status answer, including
+  401/403, is alive; only DNS/refused/timeout count as failures; one
+  provider-head per call, `?limit=` rotates coverage).
+- **Benchmark wiring** — the live tag index now injects the DB-backed
+  taskFitness stack (user override → arena ELO → models.dev tier) as the
+  `scoreLookup` hook, rescaled 0..1 → 0..100. Only `coder`/`reasoning`
+  categories map (the fitness task types they honestly describe); the
+  fitness stack's own static table is deliberately NOT mapped (it would
+  launder one set of ballparks into another).
+- **Guide 2 Part 2 (model: "auto")** — the direct chat path: a bare
+  `model: "auto"` in `/v1/chat/completions` classifies the conversation
+  and routes to the capability alias (the same semantics /harness/task
+  gave agents, now in-pipeline for the brain's config.yaml default).
+  Operator combos named "auto" still win; provider-prefixed ids never
+  match.
+- **Guide 2 quick retry** — `policy.retry_503_after_ms` (0–120000,
+  default 0): when a tag's candidates exhaust, wait and retry ONCE
+  before the honest 503 (`retried: true` on the outcome). The guide's
+  "retry once after 20s; if still 503, tell the user honestly" is now a
+  fork-side opt-in instead of a client obligation.
+
+### What remains (B9+)
+
+The breaker feed for the allocator's 0.2 multiplier; the Guide 2 Part 8
+matrix rows that need the live Hermes client.

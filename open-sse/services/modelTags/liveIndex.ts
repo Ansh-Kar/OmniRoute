@@ -25,6 +25,7 @@ import { SEARCH_PROVIDERS } from "../../config/searchRegistry.ts";
 import { UPSCALE_PROVIDERS } from "../../config/upscaleRegistry.ts";
 import { generateModels } from "../../config/providerRegistry.ts";
 import type { ComboLogger } from "../combo/types.ts";
+import { taskFitnessScoreLookup } from "./runtimeScores.ts";
 import {
   buildFusionPanelFromTags,
   buildModelTagIndex,
@@ -126,7 +127,12 @@ let cachedIndex: ModelTagIndex | null = null;
 
 export function getModelTagIndex(): ModelTagIndex {
   if (!cachedIndex) {
-    cachedIndex = buildModelTagIndex(generateModels(), collectMediaModels());
+    // B8 benchmark wiring: DB-backed taskFitness (user override → arena
+    // ELO → models.dev tier) overrides the static seeds via the scoreLookup
+    // hook — the injection point seedBenchmarks reserved for exactly this.
+    cachedIndex = buildModelTagIndex(generateModels(), collectMediaModels(), {
+      scoreLookup: taskFitnessScoreLookup,
+    });
   }
   return cachedIndex;
 }

@@ -19,6 +19,7 @@
  * this logic.
  */
 
+import { canaryAllows } from "./canary.ts";
 import { inferModelCategories, type ModelCapabilityHints } from "./inference.ts";
 import { lookupBenchmarkSeed, type BenchmarkSeed } from "./seedBenchmarks.ts";
 import { BENCHMARK_AXES, lookupAxisSeed, type BenchmarkAxis } from "./benchmarkAxes.ts";
@@ -437,12 +438,17 @@ function interleaveByProvider(sorted: ModelTagEntry[]): ModelTagEntry[] {
   return out;
 }
 
-/** Retrieve models by tag query. Pure; does not touch the DB or network. */
+/**
+ * Retrieve models by tag query. Pure; does not touch the DB or network.
+ * B8 canaries: entries with a FRESH dead verdict are skipped — with no
+ * canary state (the default) nothing is filtered and rankings are
+ * byte-identical to pre-B8 behavior.
+ */
 export function findModelsByTags(
   index: ModelTagIndex,
   query: ModelTagQuery = {}
 ): ModelTagEntry[] {
-  let sorted = sortEntries(index, query);
+  let sorted = sortEntries(index, query).filter((entry) => canaryAllows(entry.id));
   if (query.distinctModels) sorted = collapseToDistinctModels(sorted);
   if (query.diverseProviders) sorted = interleaveByProvider(sorted);
   return query.limit ? sorted.slice(0, query.limit) : sorted;

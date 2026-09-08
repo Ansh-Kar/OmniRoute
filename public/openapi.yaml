@@ -1742,7 +1742,10 @@ paths:
         video, B7): media tags imply theirs (image_gen->image,
         audio_speech->speech, music_gen->music, video_gen->video);
         modality "search" on a chat tag dispatches the task literally to
-        /v1/search (web search, no model). Media results land as JSON
+        /v1/search (web search, no model). policy.compress_context
+        (default false) runs the Caveman engine over each swarm worker's
+        shared context before fan-out (code blocks preserved; per-task
+        context_compressed log). Media results land as JSON
         envelopes ({images|search|speech|music|video: ...}) on the task
         row and in job responses (task.modality).
       security:
@@ -1816,6 +1819,10 @@ paths:
         Idempotency-Key header is forwarded — the chat pipeline's native
         replay applies. Errors: 400 invalid_request with per-field details;
         503 no_active_models when a capability has no live candidates.
+        policy.retry_503_after_ms (0-120000, default 0): Guide 2's
+        "retry once after 20s" — when the tag's candidates exhaust, wait
+        and retry ONCE before the honest 503 (retried: true on the
+        outcome).
       security:
         - BearerAuth: []
       parameters:

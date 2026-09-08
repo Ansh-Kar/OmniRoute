@@ -338,6 +338,34 @@ Task `modality` + three new media capability tags (see
   3.15.2 and broke the openapi check scripts' named imports); deps
   tarball rebuilt with js-yaml 4.3.2.
 
+### 5i. Harness B8 — cross-cutting hardening (`feat(harness)`)
+
+Compression + canaries + benchmark wiring + Guide 2 fork-side mechanics
+(see `docs/guides/HARNESS.md` §B8):
+
+- **Compression** — `policy.compress_context` (default false): Caveman/
+  lite over each swarm worker's context before fan-out; code preserved;
+  `context_compressed` log with token delta; verbatim fallback.
+- **Canaries** — 2-consecutive-failure dead marking; freshness window
+  (stale dead stops filtering); `findModelsByTags` skips fresh-dead;
+  empty state = no behavior change. Routes:
+  `GET /v1/models/canaries`, `POST /v1/models/canaries/check`
+  (reachability semantics: any HTTP answer = alive).
+- **Benchmark wiring** — DB-backed taskFitness (user override → arena
+  ELO → models.dev tier) injected as the live index's `scoreLookup`
+  (coder→coding, reasoning→analysis only; ×100 rescale).
+- **Guide 2** — bare `model: "auto"` classifies + routes on the direct
+  chat path; `policy.retry_503_after_ms` on /quick retries ONCE before
+  the honest 503.
+- Toolchain: deps tarball layout bug fixed (nested `minstall/` prefix
+  silently broke node_modules links) + setup-fast.sh now fails loudly on
+  a broken link.
+- Tests: `tests/unit/services/harness-b8.test.ts` (15 — retry semantics,
+  compression on/off + control comparison, canary state machine +
+  ranking skip + probe semantics, override→runtime-score flow, auto
+  classifier decisions). Combined batch 155/155; openapi 706/99.3%;
+  fastcheck tsc clean.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

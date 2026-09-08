@@ -54,6 +54,7 @@ import {
   assembleSwarmPrompt,
   buildAskPrompt,
   buildJudgeMessages,
+  compressSwarmContext,
   MAILBOX_TIMEOUT_MS,
   mergeIntoBlackboard,
   parseAskDirectives,
@@ -92,6 +93,13 @@ export type OrchestratePolicy = {
   max_per_provider?: number;
   /** B6: total token budget across task dispatches (prompt+completion); 0 = unlimited. */
   max_total_tokens?: number;
+  /**
+   * B8: compress the swarm shared context (goal + blackboard) with the
+   * Caveman engine before worker fan-out — each worker's prompt shrinks,
+   * and the savings multiply across N workers. Default false (opt-in):
+   * compression trades prose fidelity for tokens; code blocks are preserved.
+   */
+  compress_context?: boolean;
 };
 
 export type OrchestratePlanBody = {
@@ -339,6 +347,7 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
     routing: rawPolicy.routing === "assigned" ? "assigned" : "alias",
     max_per_provider: clampInt(rawPolicy.max_per_provider, 1, 16, 3),
     max_total_tokens: clampInt(rawPolicy.max_total_tokens, 0, 1_000_000_000, 0),
+    compress_context: rawPolicy.compress_context === true,
   };
   return {
     ok: true,
@@ -927,11 +936,24 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
         if (!leased) return;
         log(taskId, "task_start", `attempt ${task.attempts + 1}`);
 
-        const prompt = effectivePrompt(current, task, byId);
+        let prompt = effectivePrompt(current, task, byId);
         const alias = aliasForTag(task.tag, current.policy.budget);
         const assignment = assignments.get(taskId);
         const started = now();
         const modality = taskModalityOf(task);
+        // B8: compress the swarm context before fan-out (opt-in policy; text
+        // dispatches only — media prompts are endpoint inputs, not prose).
+        if (current.policy.compress_context && current.mode === "swarm" && modality === "text") {
+          const compressed = compressSwarmContext(prompt);
+          if (compressed.applied) {
+            prompt = compressed.text;
+            log(
+              taskId,
+              "context_compressed",
+              `${compressed.originalTokens}→${compressed.compressedTokens} tokens (caveman/lite)`
+            );
+          }
+        }
         let outcome: Awaited<ReturnType<TaskDispatch>>;
         try {
           outcome = await dispatch({

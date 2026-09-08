@@ -578,6 +578,32 @@ async function handleChatImplementation(
     }
   }
 
+  // Fork(parallel-execution) B8 — Guide 2 Part 2: bare `model: "auto"` (the
+  // brain's config.yaml default at :20128) classifies the conversation and
+  // routes to the classification's capability alias — "the harness decides"
+  // on the direct path too (the same semantics B1 gave /harness/task, now
+  // in-pipeline). Bare name only: a provider-prefixed "vendor/auto" is an
+  // ordinary model id and never matches.
+  if (modelStr === "auto") {
+    try {
+      const { classifyRequest } = await import(
+        "@omniroute/open-sse/services/harness/classifier.ts"
+      );
+      const classification = await classifyRequest(body ?? {}, {});
+      modelStr = classification.alias;
+      if (body?.model !== modelStr) {
+        body = { ...body, model: modelStr };
+      }
+      log.info(
+        "AUTO_ROUTE",
+        `model "auto" → ${classification.type} (${modelStr}, ${classification.confidence}: ${classification.reason})`
+      );
+    } catch {
+      // Classifier unavailable — fall through to ordinary resolution, which
+      // will fail loudly on the unknown model rather than mis-route.
+    }
+  }
+
   // cc discovery alias (`claude/<provider>/<model>`, `claude/combo/<name>`):
   // resolve back to the real id before any combo lookup / resolveModelOrError()
   // sees it — see resolveCcDiscoveryAliasStrip. A genuine claude/ model id (the

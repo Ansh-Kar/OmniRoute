@@ -13,6 +13,8 @@
  */
 
 import type { OrchestrateJob, OrchestrateTask } from "./orchestrator.ts";
+import { cavemanCompress } from "../compression/caveman.ts";
+import { estimateCompressionTokens } from "../compression/stats.ts";
 
 // ── Prompt assembly ─────────────────────────────────────────────────────────
 
@@ -105,6 +107,63 @@ export function appendMailboxAnswer(
   mailbox[`${entry.from}->${entry.to}`] = entry;
   next.mailbox = mailbox;
   return next;
+}
+
+// ── B8: swarm context compression ──────────────────────────────────────────
+
+export type SwarmCompression = {
+  text: string;
+  applied: boolean;
+  originalTokens: number;
+  compressedTokens: number;
+};
+
+/**
+ * Compress a worker's swarm prompt (shared context + task) with the Caveman
+ * engine — the roadmap's "compression before worker fan-out": each worker
+ * gets the compressed context, and the savings multiply across N workers.
+ * Code blocks and preserved blocks are untouched (see preservation.ts); a
+ * no-op returns applied: false so callers skip the log noise.
+ */
+export function compressSwarmContext(text: string): SwarmCompression {
+  const originalTokens = estimateCompressionTokens(text);
+  try {
+    // enabled defaults to false upstream (the chat-pipeline opt-in); the
+    // swarm fan-out opts in explicitly. "lite" intensity keeps the prose
+    // readable while the rules strip filler — the guide's fidelity tradeoff.
+    const result = cavemanCompress(
+      { messages: [{ role: "user", content: text }] },
+      { enabled: true, intensity: "lite" }
+    );
+    if (!result.compressed) {
+      return { text, applied: false, originalTokens, compressedTokens: originalTokens };
+    }
+    const compressedText = contentTextOf(
+      (result.body as { messages?: Array<{ role: string; content?: unknown }> }).messages?.[0]?.content
+    );
+    const compressedTokens = estimateCompressionTokens(compressedText);
+    if (compressedTokens >= originalTokens) {
+      return { text, applied: false, originalTokens, compressedTokens };
+    }
+    return { text: compressedText, applied: true, originalTokens, compressedTokens };
+  } catch {
+    // Compression must never break a dispatch — fall back verbatim.
+    return { text, applied: false, originalTokens, compressedTokens: originalTokens };
+  }
+}
+
+function contentTextOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) =>
+        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+          ? (part as { text: string }).text
+          : ""
+      )
+      .join("");
+  }
+  return "";
 }
 
 // ── Bounded A2A question relay ──────────────────────────────────────────────

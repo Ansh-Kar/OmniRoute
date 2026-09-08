@@ -32,7 +32,16 @@ export type QuickBody = {
   prompt: string;
   /** Optional image inputs (vision tag): URLs or base64 data URIs. */
   images?: string[];
-  policy?: { budget?: string };
+  policy?: {
+    budget?: string;
+    /**
+     * Guide 2 delegation contract: "On 503 for a tag: retry once after 20s;
+     * if still 503, tell the user honestly." Fork-side, opt-in: when the
+     * dispatch exhausts every candidate (the honest 503), wait this many
+     * milliseconds and retry ONCE. 0 (default) = fail immediately.
+     */
+    retry_503_after_ms?: number;
+  };
 };
 
 export type QuickDispatchResult = {
@@ -46,6 +55,8 @@ export type QuickOptions = {
   dispatchChat: (body: Record<string, unknown>) => Promise<QuickDispatchResult>;
   /** POST an images-generations body; same contract. */
   dispatchImages: (body: Record<string, unknown>) => Promise<QuickDispatchResult>;
+  /** Test seam: the Guide-2 retry wait (default: real setTimeout). */
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export type QuickResult = {
@@ -59,8 +70,11 @@ function invalid(details: string[]): QuickResult {
   return { status: 400, payload: { ok: false, error: "invalid_request", details } };
 }
 
-function noActiveModels(tag: string): QuickResult {
-  return { status: 503, payload: { ok: false, error: "no_active_models", tag } };
+function noActiveModels(tag: string, retried = false): QuickResult {
+  return {
+    status: 503,
+    payload: { ok: false, error: "no_active_models", tag, ...(retried ? { retried: true } : {}) },
+  };
 }
 
 /** Guide 2 capability reference ↔ B1 task types (image_gen included). */
@@ -105,11 +119,18 @@ export async function orchestrateQuick(
   if (!BUDGETS.has(budgetRaw)) details.push(`policy.budget must be one of: any, best, cheap (got "${budgetRaw}")`);
   if (body.images !== undefined && (!Array.isArray(body.images) || body.images.some((i) => typeof i !== "string")))
     details.push("images must be an array of strings (URLs or data URIs)");
+  const retryRaw = Number(body.policy?.retry_503_after_ms ?? 0);
+  if (!Number.isFinite(retryRaw) || retryRaw < 0)
+    details.push(`policy.retry_503_after_ms must be a non-negative number (got ${String(body.policy?.retry_503_after_ms)})`);
   if (details.length > 0) return invalid(details);
 
   const tag = body.tag as TaskType;
   const budget = budgetRaw as QuickBudget;
   const prompt = body.prompt;
+  // Guide 2 delegation contract, fork-side: one retry after this wait when
+  // the tag's candidates exhaust (the honest 503). 0 = fail immediately.
+  const retryMs = Math.min(120_000, Math.floor(retryRaw));
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   // ── image_gen: resolve the best image specialist, dispatch the images API ──
   if (tag === "image_gen") {
@@ -129,14 +150,24 @@ export async function orchestrateQuick(
     const chosen = candidates[0]; // top-ranked (cheap pre-filter applied above)
     if (!chosen) return noActiveModels(tag);
     const started = Date.now();
-    let result: QuickDispatchResult;
-    try {
-      result = await options.dispatchImages({ model: chosen.id, prompt, n: 1 });
-    } catch {
-      return noActiveModels(tag);
+    let retried = false;
+    let result: QuickDispatchResult | null = null;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        result = await options.dispatchImages({ model: chosen.id, prompt, n: 1 });
+      } catch {
+        result = null;
+      }
+      if (result && result.status === 200) break;
+      if (attempt === 0 && retryMs > 0) {
+        retried = true;
+        await sleep(retryMs);
+        continue;
+      }
+      break;
     }
     const latencyMs = Date.now() - started;
-    if (result.status !== 200) return noActiveModels(tag);
+    if (!result || result.status !== 200) return noActiveModels(tag, retried);
     const json = (result.json ?? {}) as { data?: unknown[] };
     return {
       status: 200,
@@ -149,6 +180,7 @@ export async function orchestrateQuick(
         latency_ms: latencyMs,
         score: chosen.benchmark ? Math.round((chosen.benchmark.score / 100) * 1000) / 1000 : null,
         decision: null,
+        ...(retried ? { retried: true } : {}),
       },
     };
   }
@@ -163,22 +195,35 @@ export async function orchestrateQuick(
         ]
       : prompt;
   const started = Date.now();
+  const chatBody = {
+    model: alias,
+    stream: false, // synchronous by design (Guide 1 Part 6)
+    messages: [{ role: "user", content }],
+  };
+  const isExhausted = (status: number) => status === 503 || status === 502 || status === 404 || status === 0;
+  let retried = false;
   let result: QuickDispatchResult;
   try {
-    result = await options.dispatchChat({
-      model: alias,
-      stream: false, // synchronous by design (Guide 1 Part 6)
-      messages: [{ role: "user", content }],
-    });
+    result = await options.dispatchChat(chatBody);
   } catch {
-    return noActiveModels(tag);
+    result = { status: 0, headers: {}, json: null };
+  }
+  if (isExhausted(result.status) && retryMs > 0) {
+    // Guide 2: one retry after the wait, then the honest 503.
+    retried = true;
+    await sleep(retryMs);
+    try {
+      result = await options.dispatchChat(chatBody);
+    } catch {
+      result = { status: 0, headers: {}, json: null };
+    }
   }
   const latencyMs = Date.now() - started;
 
-  if (result.status === 503 || result.status === 502 || result.status === 404) {
+  if (isExhausted(result.status)) {
     // All alias candidates exhausted (or the alias resolved nothing) — the
     // guide's "capability temporarily unavailable" shape.
-    return noActiveModels(tag);
+    return noActiveModels(tag, retried);
   }
   if (result.status !== 200) {
     const message =
@@ -207,6 +252,7 @@ export async function orchestrateQuick(
       latency_ms: latencyMs,
       score: scoreForModel(servedModel, tag),
       decision: parseDecisionHeader(result.headers["x-omniroute-decision"]),
+      ...(retried ? { retried: true } : {}),
     },
   };
 }
