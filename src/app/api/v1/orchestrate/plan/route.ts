@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { providerBreakerOpen } from "@/lib/harness/breakerFeed";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { SqliteJobsStore } from "@/lib/db/orchestrateJobs";
 import {
@@ -77,7 +78,13 @@ export async function POST(request: Request) {
   }
 
   // Fire the wave loop in the background; the 202 returns immediately.
-  void runJob(job.jobId, { store, dispatch: chatDispatchFor(request, job.jobId) }).catch(() => {
+  void runJob(job.jobId, {
+    store,
+    dispatch: chatDispatchFor(request, job.jobId),
+    // B9 breaker feed: the allocator's 0.2 multiplier now reads the same
+    // provider-keyed breaker registry the chat pipeline consults.
+    breakerOpen: providerBreakerOpen,
+  }).catch(() => {
     try {
       store.setJobStatus(job.jobId, "failed", "runner crashed");
     } catch {

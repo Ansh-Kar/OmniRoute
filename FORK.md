@@ -366,6 +366,18 @@ Compression + canaries + benchmark wiring + Guide 2 fork-side mechanics
   classifier decisions). Combined batch 155/155; openapi 706/99.3%;
   fastcheck tsc clean.
 
+### 5j. Harness B9 — the breaker feed (`feat(harness)`)
+
+The allocator's 0.2 multiplier reads the live provider breaker registry
+(see `docs/guides/HARNESS.md` §B9): OPEN/HALF_OPEN penalize, DEGRADED/
+CLOSED/unknown don't; persisted-state fallback survives restarts;
+`peekCircuitBreaker` reads without creating; `RunnerDeps.breakerOpen`
+plumbs it from the plan route (absent = B5 behavior). Tests:
+`tests/unit/services/harness-b9.test.ts` (7 — predicate signature +
+score math, feed semantics incl. persisted fallback + no-creation,
+runner steering away from an open provider). Combined batch 162/162;
+openapi 706/99.3%; fastcheck tsc clean.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

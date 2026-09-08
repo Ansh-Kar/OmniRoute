@@ -2328,7 +2328,9 @@ paths:
         policy: budget (any|best|cheap), max_attempts (1-5, default 3),
         max_concurrency (1-16, default 8), deadline_s (default 600),
         task_timeout_ms (default 120000), routing (alias|assigned, default
-        alias; assigned = allocator water-filling per Guide 1 Part 4),
+        alias; assigned = allocator water-filling per Guide 1 Part 4; the
+        allocator's breaker multiplier reads the live provider circuit
+        breaker registry — open/half-open providers score ×0.2),
         max_per_provider (1-16, default 3, assigned routing),
         max_total_tokens (0 = unlimited; on breach unstarted tasks abort
         with budget_exhausted and the job fails — partial results stay

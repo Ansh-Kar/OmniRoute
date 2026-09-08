@@ -640,6 +640,13 @@ export type RunnerDeps = {
   sleep?: (ms: number) => Promise<void>;
   /** Swarm: override the judge pass's check instruction (manual advance). */
   judgeCheck?: string;
+  /**
+   * B9 breaker feed: is this provider's circuit breaker open (or
+   * half-open)? Drives the allocator's 0.2 multiplier — the plan route
+   * passes the provider-keyed registry (src/lib/harness/breakerFeed.ts);
+   * absent = no penalty (B5 behavior).
+   */
+  breakerOpen?: (provider: string) => boolean;
 };
 
 export function aliasForTag(tag: TaskType, budget: string): string {
@@ -891,6 +898,10 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
           maxPerProvider: current.policy.max_per_provider,
           statOf: (model) => stats[model],
           penaltyOf: (model) => penalties[model] ?? 0,
+          // B9: the live breaker feed — open providers score ×0.2 (guide
+          // Part 8 formula), so a tripped provider stops winning
+          // assignments until its breaker recovers.
+          breakerOf: (_model, provider) => (provider ? deps.breakerOpen?.(provider) ?? false : false),
         }
       );
       for (const [taskId, assignment] of assigned) {

@@ -580,7 +580,30 @@ Four roadmap §6 items plus the Guide 2 fork-side acceptance mechanics:
   "retry once after 20s; if still 503, tell the user honestly" is now a
   fork-side opt-in instead of a client obligation.
 
-### What remains (B9+)
+## B9 — the breaker feed (allocator 0.2 multiplier source)
 
-The breaker feed for the allocator's 0.2 multiplier; the Guide 2 Part 8
-matrix rows that need the live Hermes client.
+B5's score formula always had `× breaker(0.2 open)`, but the allocator
+received `breakerOpen: false` from every caller — the multiplier existed
+with no data source. B9 wires it to the REAL state: the same
+provider-keyed circuit-breaker registry the chat pipeline consults
+(`getCircuitBreaker(provider)` in chatHelpers — CLOSED → DEGRADED → OPEN
+→ HALF_OPEN, DB-persisted).
+
+- **Semantics** — OPEN and HALF_OPEN earn the 0.2 penalty (the pipeline
+  is already rejecting the provider's requests — ranking it top just
+  burns a retry; half-open is probing, not proven healthy). DEGRADED,
+  CLOSED, and unknown providers get no penalty. Cold-process fallback:
+  when the registry has no instance, the PERSISTED breaker state is
+  consulted (the same record getCircuitBreaker's constructor
+  rehydrates), so a restart doesn't forget an open breaker.
+- **No side effects** — the feed reads via `peekCircuitBreaker`
+  (registry-only, never creates an instance), so ranking never pollutes
+  the resilience dashboards with breakers nothing has executed.
+- **Plumbing** — `RunnerDeps.breakerOpen(provider)` → the allocator's
+  `breakerOf(model, provider)`; the plan route passes
+  `providerBreakerOpen` (src/lib/harness/breakerFeed.ts). Absent = B5
+  behavior (no penalty).
+
+### What remains (B10+)
+
+The Guide 2 Part 8 matrix rows that need the live Hermes client.

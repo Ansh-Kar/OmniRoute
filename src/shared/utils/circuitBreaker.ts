@@ -666,6 +666,17 @@ function evictColdBreakersIfNeeded(): void {
   }
 }
 
+/**
+ * Registry-only peek: the breaker if it exists in this process, undefined
+ * otherwise — unlike getCircuitBreaker this never CREATES an instance (and
+ * never rehydrates from the DB), so read-only consumers (the harness
+ * allocator's breaker feed, B9) don't pollute the registry or the
+ * resilience dashboards with breakers nothing has executed.
+ */
+export function peekCircuitBreaker(name: string): CircuitBreaker | undefined {
+  return registry.get(name);
+}
+
 export function getCircuitBreaker(name: string, options?: CircuitBreakerOptions): CircuitBreaker {
   if (!registry.has(name)) {
     evictColdBreakersIfNeeded();

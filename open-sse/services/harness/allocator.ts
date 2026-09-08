@@ -105,8 +105,13 @@ export type AssignOptions = {
   statOf?: (model: string) => ModelStat | undefined;
   /** Judge-drift quality penalties per model (subtracted from quality). */
   penaltyOf?: (model: string) => number;
-  /** Breaker state per model (B5: callers pass false; feed is future work). */
-  breakerOf?: (model: string) => boolean;
+  /**
+   * Breaker state per candidate (B9: the feed is live — the plan route
+   * passes the provider-keyed circuit-breaker registry via
+   * src/lib/harness/breakerFeed.ts). Provider is the candidate's registry
+   * provider; the model is passed for finer-grained feeds.
+   */
+  breakerOf?: (model: string, provider: string | null) => boolean;
 };
 
 export type Assignment = {
@@ -148,7 +153,7 @@ export function assignModels(
       const score = scoreCandidate({
         quality,
         stat: options.statOf?.(candidate.model),
-        breakerOpen: options.breakerOf?.(candidate.model),
+        breakerOpen: options.breakerOf?.(candidate.model, candidate.provider ?? null) ?? false,
       });
       return { candidate, score, index };
     });
