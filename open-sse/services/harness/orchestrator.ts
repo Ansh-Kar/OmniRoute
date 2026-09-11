@@ -62,6 +62,14 @@ import {
   parseSummary,
   withJudgeFeedback,
 } from "./swarmMode.ts";
+import {
+  ensureTaskWorktree,
+  syncBlackboardToWorktree,
+  getSessionWorktreeDiff,
+  triggerWorktreeVerification,
+  waitForVerification,
+  type WorktreeSession,
+} from "./opendevBridge.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -100,6 +108,14 @@ export type OrchestratePolicy = {
    * compression trades prose fidelity for tokens; code blocks are preserved.
    */
   compress_context?: boolean;
+  /** OpenDev Integration: dispatch code tasks to isolated Git worktrees */
+  execution_target?: "api" | "opendev" | "worktree";
+  /** Target OpenDev project ID for worktree provisioning */
+  project_id?: string;
+  /** Run detached test supervisor in worktree after code generation */
+  verify_supervisor?: boolean;
+  /** Custom test/verification command for the supervisor (e.g. "npm test") */
+  verify_command?: string;
 };
 
 export type OrchestratePlanBody = {
@@ -115,9 +131,9 @@ export type TaskState = "queued" | "running" | "done" | "failed";
 
 // ── B7 multimodal dispatch ─────────────────────────────────────────────────
 /** Endpoint family a task dispatches to. Chat tags default to "text". */
-export type TaskModality = "text" | "image" | "search" | "speech" | "music" | "video";
+export type TaskModality = "text" | "image" | "search" | "speech" | "music" | "video" | "worktree";
 
-export const TASK_MODALITIES = ["text", "image", "search", "speech", "music", "video"] as const;
+export const TASK_MODALITIES = ["text", "image", "search", "speech", "music", "video", "worktree"] as const;
 
 /** Media tags imply their modality — the dispatch layer never guesses. */
 export const MODALITY_BY_TAG: Record<TaskType, TaskModality> = {
@@ -965,6 +981,17 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
             );
           }
         }
+
+        // OpenDev worktree integration: provision isolated git worktree & sync blackboard
+        let worktreeSession: WorktreeSession | null = null;
+        if (current.policy.execution_target === "opendev" || modality === "worktree") {
+          worktreeSession = await ensureTaskWorktree(current.policy.project_id || "default", taskId);
+          if (worktreeSession) {
+            log(taskId, "worktree_allocated", `branch: ${worktreeSession.branchName}`);
+            await syncBlackboardToWorktree(worktreeSession, current.blackboard);
+          }
+        }
+
         let outcome: Awaited<ReturnType<TaskDispatch>>;
         try {
           outcome = await dispatch({
@@ -982,6 +1009,30 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
           outcome = { ok: false, error: error instanceof Error ? error.message : "dispatch threw" };
         }
         const latency = now() - started;
+
+        if (outcome.ok) {
+          // If worktree verification is enabled, run detached supervisor
+          if (worktreeSession && current.policy.verify_supervisor) {
+            log(taskId, "supervisor_verification_start", "Running detached test runner in worktree");
+            const verifyRun = await triggerWorktreeVerification(worktreeSession, current.policy.verify_command);
+            if (verifyRun) {
+              const verifyOutcome = await waitForVerification(verifyRun.runId, current.policy.task_timeout_ms);
+              if (verifyOutcome.status !== "succeeded") {
+                log(taskId, "supervisor_verification_failed", `Exit code ${verifyOutcome.exitCode ?? "?"}`);
+                outcome = {
+                  ok: false,
+                  error: `Verification tests failed (exit code ${verifyOutcome.exitCode}):\n${verifyOutcome.log.slice(0, 1000)}`,
+                };
+              } else {
+                log(taskId, "supervisor_verification_passed", "All tests passed in worktree");
+                const diff = await getSessionWorktreeDiff(worktreeSession);
+                if (diff?.filesChanged?.length) {
+                  outcome.text += `\n\n[Worktree Commits]: Modified ${diff.filesChanged.length} files (${diff.filesChanged.join(", ")})`;
+                }
+              }
+            }
+          }
+        }
 
         if (outcome.ok) {
           waveResults.push({ taskId, text: outcome.text });
