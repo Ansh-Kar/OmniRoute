@@ -13,15 +13,19 @@ import {
 import {
   MODALITY_BY_TAG,
   ORCHESTRATE_DEFAULTS,
+  normalizeAppendTasks,
+  taskRowsFromSpecs,
+  inferTaskTag,
   type OrchestrateJob,
   type OrchestratePlanBody,
   type PlanValidation,
   type TaskDispatch,
   type TaskModality,
+  type TaskType,
   validatePlan,
 } from "@omniroute/open-sse/services/harness/orchestrator.ts";
 
-export { validatePlan };
+export { validatePlan, normalizeAppendTasks, taskRowsFromSpecs };
 export type { PlanValidation, OrchestratePlanBody };
 
 export function newJobId(): string {
@@ -30,9 +34,19 @@ export function newJobId(): string {
 
 export function jobFromPlan(
   validation: Extract<PlanValidation, { ok: true }>,
-  idempotencyKey: string | null
+  idempotencyKey: string | null,
+  parentJobId: string | null = null
 ): OrchestrateJob {
   const now = Date.now();
+  // B10: inferred tags are logged at creation — the routing decision is
+  // auditable from the job log, never silent.
+  const inferredLogs = validation.inferredTags.map((inferred) => ({
+    timestamp: now,
+    jobId: "",
+    taskId: inferred.id,
+    event: "tag_inferred",
+    detail: `"${inferred.tag}" — ${inferred.reason}`,
+  }));
   return {
     jobId: newJobId(),
     goal: validation.goal,
@@ -42,6 +56,8 @@ export function jobFromPlan(
     status: "active",
     failureReason: null,
     idempotencyKey,
+    callerModel: validation.callerModel,
+    parentJobId,
     judgeRounds: 0,
     createdAt: now,
     deadlineAt: now + validation.policy.deadline_s * 1000,
@@ -65,7 +81,7 @@ export function jobFromPlan(
       promptTokens: null,
       completionTokens: null,
     })),
-    log: [],
+    log: inferredLogs,
   };
 }
 
@@ -202,7 +218,11 @@ export function chatDispatchFor(request: Request, jobId?: string | null): TaskDi
     if (wave !== undefined) traceHeaders["X-OmniRoute-Wave"] = String(wave);
     // B7: pre-B7 jobs/rows carry no modality — the tag's implied modality is
     // the exact historical behavior (image_gen was the only media dispatch).
-    const effectiveModality: TaskModality = modality ?? MODALITY_BY_TAG[tag];
+    // "worktree" is an execution-location, not an endpoint family: the
+    // orchestrator provisions the worktree before dispatch; the dispatch
+    // itself is an ordinary chat call against it.
+    const requestedModality: TaskModality = modality ?? MODALITY_BY_TAG[tag];
+    const effectiveModality: Exclude<TaskModality, "worktree"> = requestedModality === "worktree" ? "text" : requestedModality;
     try {
       // B7: literal web-search tasks hit /v1/search directly (no model —
       // the route picks the provider/credentials; query capped at 500 chars

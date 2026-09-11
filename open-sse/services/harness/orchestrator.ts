@@ -34,6 +34,10 @@ import {
   TASK_TYPE_TO_QUERY,
   type TaskType,
 } from "../modelTags/index.ts";
+
+// Re-exported for the stores and dispatch wiring (B10: the SQLite store and
+// lib/orchestrator/dispatch.ts import the tag vocabulary from here).
+export type { TaskType };
 import {
   assignModels,
   JUDGE_DRIFT_PENALTY,
@@ -70,12 +74,20 @@ import {
   waitForVerification,
   type WorktreeSession,
 } from "./opendevBridge.ts";
+// B10: tag inference for tag-less tasks (classifier stage 1 — free, deterministic).
+import { classifyRequestBody } from "./classifier.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export type OrchestrateTaskSpec = {
   id: string;
-  tag: string;
+  /**
+   * B10 (OpenResearch adaptation): the tag is OPTIONAL. The caller names
+   * work, not models — when absent, the classifier's stage-1 heuristics
+   * infer it from the prompt (inferTaskTag) and the inference is logged.
+   * Explicit tags still win, exactly as before.
+   */
+  tag?: string;
   prompt: string;
   depends_on?: string[];
   /**
@@ -116,6 +128,27 @@ export type OrchestratePolicy = {
   verify_supervisor?: boolean;
   /** Custom test/verification command for the supervisor (e.g. "npm test") */
   verify_command?: string;
+  /**
+   * B10 (OpenResearch adaptation): wave = barrier semantics (all tasks in a
+   * wave finish before the next fires — B3 default, unchanged); stream =
+   * per-completion admission — the moment ANY task finishes, the next ready
+   * task starts in the freed slot. Stream is the OpenResearch auto-research
+   * loop shape: control returns per completion, not per batch.
+   */
+  scheduling?: "wave" | "stream";
+  /**
+   * B10 bias guard: when caller_model is set (the brain names itself so the
+   * gateway can avoid self-preference), sub-agent and judge dispatches
+   * avoid that model when a tag-viable alternative exists. Default true;
+   * set false only for deliberate same-model ensembles.
+   */
+  bias_guard?: boolean;
+  /**
+   * B10 spawn: max concurrently ACTIVE child jobs a parent job may have
+   * (the `orx agent spawn` in-flight cap analog). Default 4 (≥2 per the
+   * admission-limits floor).
+   */
+  max_children?: number;
 };
 
 export type OrchestratePlanBody = {
@@ -199,6 +232,21 @@ export type OrchestrateJob = {
   status: JobStatus;
   failureReason: string | null;
   idempotencyKey: string | null;
+  /**
+   * B10 bias guard: the model the CALLING agent runs on (Hermes naming
+   * itself). When set, task and judge dispatches avoid this model when a
+   * tag-viable alternative exists — a same-model ensemble inherits the
+   * caller's blind spots (self-preference bias), so diversity is enforced
+   * at routing time. Null = caller did not identify (no guard, B3–B9
+   * behavior).
+   */
+  callerModel: string | null;
+  /**
+   * B10 spawn: the job that spawned this one as a delegated helper
+   * (`orx agent spawn` analog). null = top-level. Children may not spawn
+   * (no nesting) and count against their parent's max_children while active.
+   */
+  parentJobId: string | null;
   createdAt: number;
   deadlineAt: number;
   /** Judge passes completed (swarm mode; hard cap = policy.max_rounds). */
@@ -221,6 +269,7 @@ export const ORCHESTRATE_DEFAULTS = {
   deadlineS: 600,
   taskTimeoutMs: 120_000,
   maxRounds: 3,
+  maxChildren: 4, // B10 spawn: default per-parent in-flight child cap (≥2 admission floor)
 } as const;
 
 /** Guide 1 Part 9 acceptance uses 6-task plans; the swarm #1905 cap is 40. */
@@ -229,8 +278,20 @@ export const ORCHESTRATE_MAX_TASKS = 40;
 // ── Admission validation (replaces validate_plan.py) ────────────────────────
 
 export type PlanValidation =
-  | { ok: true; tasks: Array<OrchestrateTaskSpec & { tag: TaskType; modality: TaskModality }>; mode: "parallel" | "swarm"; policy: Required<OrchestratePolicy>; goal: string; blackboard: Record<string, unknown> | null }
+  | { ok: true; tasks: Array<OrchestrateTaskSpec & { tag: TaskType; modality: TaskModality }>; mode: "parallel" | "swarm"; policy: Required<OrchestratePolicy>; goal: string; blackboard: Record<string, unknown> | null; callerModel: string | null; inferredTags: Array<{ id: string; tag: TaskType; reason: string }> }
   | { ok: false; errors: string[] };
+
+/**
+ * B10 (OpenResearch adaptation): infer a task tag from its prompt — the
+ * classifier's stage-1 heuristics, free and deterministic, over a synthetic
+ * single-turn body. The caller names work; the gateway routes it. Explicit
+ * tags always win; this only fills absences, and every inference is logged
+ * so the decision is auditable, never silent.
+ */
+export function inferTaskTag(prompt: string): { tag: TaskType; reason: string } {
+  const classification = classifyRequestBody({ messages: [{ role: "user", content: prompt }] });
+  return { tag: classification.type, reason: classification.reason };
+}
 
 export function validatePlan(body: OrchestratePlanBody): PlanValidation {
   const errors: string[] = [];
@@ -260,8 +321,10 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
 
   const seen = new Set<string>();
   const ids = new Set<string>();
+  const inferredTags: Array<{ id: string; tag: TaskType; reason: string }> = [];
   const normalized: Array<OrchestrateTaskSpec & { tag: TaskType; modality: TaskModality }> = [];
-  for (const [index, task] of tasks.entries()) {
+  for (const [index, task0] of tasks.entries()) {
+    let task = task0;
     if (!task || typeof task !== "object") {
       errors.push(`tasks[${index}] must be an object`);
       continue;
@@ -273,6 +336,14 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
     if (seen.has(task.id)) errors.push(`duplicate task id "${task.id}"`);
     seen.add(task.id);
     ids.add(task.id);
+    // B10: tag optional — absent (or empty) → inferred from the prompt via
+    // the classifier's stage-1 heuristics (deterministic, logged). Explicit
+    // tags are validated as before.
+    if (task.tag === undefined || task.tag === null || task.tag === "") {
+      const inferred = inferTaskTag(task.prompt ?? "");
+      task = { ...task, tag: inferred.tag };
+      inferredTags.push({ id: task.id, tag: inferred.tag, reason: inferred.reason });
+    }
     if (!isTaskType(task.tag)) {
       errors.push(`tasks[${index}] ("${task.id}"): unknown tag "${task.tag}" (vocabulary: ${TASK_TYPES.join(", ")})`);
       continue;
@@ -350,6 +421,9 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
 
   if (errors.length > 0) return { ok: false, errors };
 
+  const rawCallerModel = (body as { caller_model?: unknown }).caller_model;
+  const callerModel = typeof rawCallerModel === "string" && rawCallerModel.trim() ? rawCallerModel.trim() : null;
+
   const rawPolicy = body.policy ?? {};
   const budget = rawPolicy.budget === "best" || rawPolicy.budget === "cheap" ? rawPolicy.budget : "any";
   const policy: Required<OrchestratePolicy> = {
@@ -364,6 +438,16 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
     max_per_provider: clampInt(rawPolicy.max_per_provider, 1, 16, 3),
     max_total_tokens: clampInt(rawPolicy.max_total_tokens, 0, 1_000_000_000, 0),
     compress_context: rawPolicy.compress_context === true,
+    // OpenDev worktree integration (Build 1): explicit defaults so the
+    // Required policy is whole — absent values previously serialized as
+    // undefined keys on every persisted job row.
+    execution_target: rawPolicy.execution_target === "opendev" || rawPolicy.execution_target === "worktree" ? rawPolicy.execution_target : "api",
+    project_id: typeof rawPolicy.project_id === "string" ? rawPolicy.project_id : "",
+    verify_supervisor: rawPolicy.verify_supervisor === true,
+    verify_command: typeof rawPolicy.verify_command === "string" ? rawPolicy.verify_command : "",
+    scheduling: rawPolicy.scheduling === "stream" ? "stream" : "wave",
+    bias_guard: rawPolicy.bias_guard !== false,
+    max_children: clampInt(rawPolicy.max_children, 2, 16, ORCHESTRATE_DEFAULTS.maxChildren),
   };
   return {
     ok: true,
@@ -372,6 +456,8 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
     policy,
     goal,
     blackboard: body.blackboard && typeof body.blackboard === "object" ? body.blackboard : null,
+    callerModel,
+    inferredTags,
   };
 }
 
@@ -380,6 +466,230 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(n, min), max);
 }
+
+// ── B10 objective-first entry + spawn (OpenResearch adaptation) ─────────────
+
+export type OrchestrateObjectiveBody = {
+  /** What the caller wants accomplished — the task objective (replaces the research goal of orx projects). */
+  objective?: string;
+  /**
+   * Optional decomposition. Absent → the objective itself is the single
+   * task (the caller decomposes when it wants to; the gateway never
+   * refuses work for lacking a plan). ids optional (generated), tags
+   * optional (inferred), depends_on optional.
+   */
+  subtasks?: Array<Partial<OrchestrateTaskSpec> & { prompt: string }>;
+  /** The calling agent's model — enables the bias guard. */
+  caller_model?: string;
+  mode?: string;
+  blackboard?: Record<string, unknown>;
+  policy?: OrchestratePolicy;
+};
+
+/**
+ * Normalize an objective body into a plan body. Pure — no store, no clock.
+ * Returns null + errors on shape problems; semantic validation is
+ * validatePlan's job (one admission path, not two).
+ */
+export function objectiveToPlanBody(
+  body: OrchestrateObjectiveBody
+): { plan: OrchestratePlanBody & { caller_model?: string } | null; errors: string[] } {
+  if (!body || typeof body !== "object") return { plan: null, errors: ["body must be an object"] };
+  const errors: string[] = [];
+  const objective = typeof body.objective === "string" ? body.objective.trim() : "";
+  if (!objective) errors.push("objective must be a non-empty string");
+  let subtasks = body.subtasks;
+  if (subtasks === undefined || subtasks === null) {
+    subtasks = [{ prompt: objective }];
+  } else if (!Array.isArray(subtasks) || subtasks.length === 0) {
+    errors.push("subtasks must be a non-empty array when provided");
+    subtasks = [];
+  } else {
+    for (const [index, subtask] of subtasks.entries()) {
+      if (!subtask || typeof subtask !== "object" || typeof subtask.prompt !== "string" || !subtask.prompt.trim()) {
+        errors.push(`subtasks[${index}].prompt must be a non-empty string`);
+      }
+    }
+  }
+  if (errors.length > 0) return { plan: null, errors };
+  const tasks = subtasks.map((subtask, index) => ({
+    id: typeof subtask.id === "string" && subtask.id.trim() ? subtask.id : `t${index + 1}`,
+    tag: typeof subtask.tag === "string" && subtask.tag ? subtask.tag : undefined,
+    prompt: subtask.prompt,
+    depends_on: Array.isArray(subtask.depends_on) ? subtask.depends_on : [],
+    ...(subtask.modality !== undefined ? { modality: subtask.modality } : {}),
+  }));
+  return {
+    plan: {
+      goal: objective,
+      mode: body.mode,
+      tasks,
+      ...(body.blackboard !== undefined ? { blackboard: body.blackboard } : {}),
+      policy: body.policy,
+      ...(body.caller_model !== undefined ? { caller_model: body.caller_model } : {}),
+    },
+    errors: [],
+  };
+}
+
+export type OrchestrateSpawnBody = {
+  /** Self-contained brief — the helper cannot see the caller's conversation (orx agent spawn's standalone-brief rule). */
+  brief?: string;
+  /** Optional short title (job goal label). */
+  title?: string;
+  /** The delegating job. Enforces: no nesting (a child cannot spawn), in-flight cap via max_children. */
+  parent_job_id?: string;
+  tag?: string;
+  /** Defaults to the parent's caller model — bias guard propagates down the spawn chain. */
+  caller_model?: string;
+  /** Explicit blackboard snapshot for the helper — copied verbatim, never auto-derived from the parent. */
+  context?: Record<string, unknown>;
+  policy?: OrchestratePolicy;
+};
+
+/**
+ * Normalize a spawn body + parent job into the child's plan body. Pure.
+ * The parent's nesting/cap checks happen at the route (they need the
+ * store); this only shapes the child job.
+ */
+export function spawnToPlanBody(
+  body: OrchestrateSpawnBody,
+  parent: OrchestrateJob
+): { plan: OrchestratePlanBody & { caller_model?: string } | null; errors: string[] } {
+  if (!body || typeof body !== "object") return { plan: null, errors: ["body must be an object"] };
+  const brief = typeof body.brief === "string" ? body.brief.trim() : "";
+  if (!brief) return { plan: null, errors: ["brief must be a non-empty string — the helper is self-contained"] };
+  const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : `helper: ${brief.slice(0, 72)}`;
+  const callerModel =
+    typeof body.caller_model === "string" && body.caller_model.trim()
+      ? body.caller_model.trim()
+      : parent.callerModel ?? undefined;
+  return {
+    plan: {
+      goal: title,
+      mode: "parallel",
+      tasks: [
+        {
+          id: "helper",
+          ...(typeof body.tag === "string" && body.tag ? { tag: body.tag } : {}),
+          prompt: brief,
+          depends_on: [],
+        },
+      ],
+      ...(body.context !== undefined ? { blackboard: body.context } : {}),
+      policy: body.policy,
+      ...(callerModel !== undefined ? { caller_model: callerModel } : {}),
+    },
+    errors: [],
+  };
+}
+
+
+// ── B10 refill helpers (routes re-export via lib/orchestrator/dispatch.ts) ──
+
+/**
+ * B10 refill: build queued task rows for appendTasks (the OpenResearch
+ * "refill the freed slot" move). Same row shape as jobFromPlan's tasks.
+ */
+export function taskRowsFromSpecs(
+  specs: Array<{ id: string; tag: string; prompt: string; modality?: string; depends_on?: string[] }>,
+  jobId: string
+): OrchestrateJob["tasks"] {
+  return specs.map((spec) => ({
+    jobId,
+    id: spec.id,
+    tag: spec.tag as OrchestrateJob["tasks"][number]["tag"],
+    modality: (spec.modality ?? "text") as OrchestrateJob["tasks"][number]["modality"],
+    prompt: spec.prompt,
+    dependsOn: spec.depends_on ?? [],
+    state: "queued" as const,
+    attempts: 0,
+    wave: null,
+    assignedModel: null,
+    assignedProvider: null,
+    result: null,
+    verdict: null,
+    latencyMs: null,
+    lastError: null,
+    leaseUntil: null,
+    promptTokens: null,
+    completionTokens: null,
+  }));
+}
+
+/**
+ * B10 refill: normalize appended task specs against a LIVE job. Unlike
+ * validatePlan, depends_on may reference tasks already on the job (append
+ * extends the graph, it doesn't restart it). Tags inferred when absent;
+ * ids generated when absent. Returns specs + the inferred-tag log lines.
+ */
+function nextFreeId(existing: Set<string>, seen: Set<string>, start: number): string {
+  let n = start;
+  let candidate = `t${n}`;
+  while (existing.has(candidate) || seen.has(candidate)) {
+    n += 1;
+    candidate = `t${n}`;
+  }
+  return candidate;
+}
+export function normalizeAppendTasks(
+  body: { tasks?: unknown },
+  job: OrchestrateJob
+): {
+  ok: true;
+  specs: Array<{ id: string; tag: string; prompt: string; modality: string; depends_on: string[] }>;
+  inferred: Array<{ id: string; tag: string; reason: string }>;
+} | { ok: false; errors: string[] } {
+  if (!body || typeof body !== "object" || !Array.isArray(body.tasks) || body.tasks.length === 0) {
+    return { ok: false, errors: ["body.tasks must be a non-empty array"] };
+  }
+  const existing = new Set(job.tasks.map((task) => task.id));
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  const specs: Array<{ id: string; tag: string; prompt: string; modality: string; depends_on: string[] }> = [];
+  const inferred: Array<{ id: string; tag: string; reason: string }> = [];
+  for (const [index, rawTask] of (body.tasks as unknown[]).entries()) {
+    if (!rawTask || typeof rawTask !== "object") {
+      errors.push(`tasks[${index}] must be an object`);
+      continue;
+    }
+    const task = rawTask as { id?: unknown; tag?: unknown; prompt?: unknown; depends_on?: unknown };
+    const prompt = typeof task.prompt === "string" ? task.prompt.trim() : "";
+    if (!prompt) {
+      errors.push(`tasks[${index}].prompt must be a non-empty string`);
+      continue;
+    }
+    const id =
+      typeof task.id === "string" && task.id.trim() && !existing.has(task.id) && !seen.has(task.id)
+        ? task.id
+        : nextFreeId(existing, seen, job.tasks.length + index + 1);
+    if (typeof task.id === "string" && task.id.trim() && (existing.has(task.id) || seen.has(task.id))) {
+      errors.push(`duplicate task id "${task.id}"`);
+      continue;
+    }
+    seen.add(id);
+    let tag: TaskType | null = null;
+    if (typeof task.tag === "string" && task.tag) {
+      tag = task.tag as TaskType;
+    } else {
+      const result = inferTaskTag(prompt);
+      tag = result.tag;
+      inferred.push({ id, tag: result.tag, reason: result.reason });
+    }
+    const dependsOn = Array.isArray(task.depends_on)
+      ? task.depends_on.filter((dep): dep is string => typeof dep === "string")
+      : [];
+    for (const dep of dependsOn) {
+      if (!existing.has(dep) && !seen.has(dep)) {
+        errors.push(`task "${id}" depends_on unknown task "${dep}" (not on the job and not appended)`);
+      }
+    }
+    specs.push({ id, tag, prompt, modality: MODALITY_BY_TAG[tag] ?? "text", depends_on: dependsOn });
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, specs, inferred };
+}
+
 
 // ── Planner (Guide 1 Part 5) ────────────────────────────────────────────────
 
@@ -470,6 +780,21 @@ export interface JobsStore {
   updateBlackboard(jobId: string, blackboard: Record<string, unknown> | null): Promise<void> | void;
   /** Swarm: persist the judge-round counter. */
   setJudgeRounds(jobId: string, rounds: number): Promise<void> | void;
+  /**
+   * B10 refill: append queued tasks to an ACTIVE job (the OpenResearch
+   * "refill the freed slot" move). Returns the updated job, or:
+   *   "job_terminal" — the job is done/failed (nothing running to pick
+   *                    the tasks up); the caller 409s and spawns instead
+   *   "duplicate_id" — a task id already exists on the job
+   *   null           — unknown job
+   */
+  appendTasks(jobId: string, tasks: OrchestrateTask[]): Promise<OrchestrateJob | "job_terminal" | "duplicate_id" | null> | OrchestrateJob | "job_terminal" | "duplicate_id" | null;
+  /**
+   * B10 spawn: the parent's child jobs (all states; the spawn route filters
+   * ACTIVE for the in-flight cap and the multi-job wait needs terminal
+   * visibility).
+   */
+  listChildJobs(parentJobId: string): Promise<OrchestrateJob[]> | OrchestrateJob[];
   appendLog(entry: Omit<OrchestrateLogEntry, "timestamp">, timestamp: number): Promise<void> | void;
 }
 
@@ -618,6 +943,26 @@ export class InMemoryJobsStore implements JobsStore {
   private task(jobId: string, taskId: string): OrchestrateTask | undefined {
     return this.jobs.get(jobId)?.tasks.find((task) => task.id === taskId);
   }
+
+  appendTasks(jobId: string, tasks: OrchestrateTask[]): OrchestrateJob | "job_terminal" | "duplicate_id" | null {
+    const job = this.jobs.get(jobId);
+    if (!job) return null;
+    if (job.status !== "active" && job.status !== "judging") return "job_terminal";
+    const existing = new Set(job.tasks.map((task) => task.id));
+    for (const task of tasks) {
+      if (existing.has(task.id)) return "duplicate_id";
+    }
+    job.tasks.push(...tasks.map((task) => structuredClone(task)));
+    return structuredClone(job);
+  }
+
+  listChildJobs(parentJobId: string): OrchestrateJob[] {
+    const children: OrchestrateJob[] = [];
+    for (const job of this.jobs.values()) {
+      if (job.parentJobId === parentJobId) children.push(structuredClone(job));
+    }
+    return children.sort((a, b) => a.createdAt - b.createdAt);
+  }
 }
 
 // ── Runner (wave loop) ──────────────────────────────────────────────────────
@@ -711,6 +1056,36 @@ export function candidatesForTag(tag: TaskType, budget: string): AllocatorCandid
 
 type LogFn = (taskId: string | null, event: string, detail?: string | null) => void;
 
+// ── B10 bias guard ─────────────────────────────────────────────────────────
+
+/**
+ * Should the bias guard engage for this job? Only when the caller named its
+ * own model AND policy.bias_guard is not disabled. Absent caller model = no
+ * guard (the B3–B9 behavior; unknown caller cannot be biased against).
+ */
+export function biasGuardActive(job: Pick<OrchestrateJob, "callerModel" | "policy">): boolean {
+  return Boolean(job.callerModel) && job.policy.bias_guard !== false;
+}
+
+/**
+ * B10 bias guard, alias routing: pick the best tag-viable model that is NOT
+ * the caller's model. Returns null when the caller's model is not among the
+ * viable candidates (alias fan-out already avoids it — nothing to do) or no
+ * alternative exists (single-model tag: the task dispatches the alias and is
+ * flagged bias_same_model — honest, never a silent self-assignment).
+ * Media tags self-alias through the dispatch layer's registry ranking, so
+ * the guard only engages for chat/search tags.
+ */
+export function pickBiasAvoidModel(tag: TaskType, budget: string, callerModel: string): string | null {
+  const candidates = candidatesForTag(tag, budget);
+  const callerPresent = candidates.some((candidate) => candidate.model === callerModel);
+  if (!callerPresent) return null;
+  const alternative = candidates
+    .filter((candidate) => candidate.model !== callerModel)
+    .sort((a, b) => b.quality - a.quality)[0];
+  return alternative ? alternative.model : null;
+}
+
 /** Wrap a chat task's prompt with the swarm shared context (media/search tasks skip it). */
 function effectivePrompt(
   job: OrchestrateJob,
@@ -747,8 +1122,17 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
   if (!initial || initial.status !== "active") return;
 
   for (;;) {
-    // ── Phase 1: waves until every task is terminal ──
-    await runWaves(jobId, deps, log);
+    // ── Phase 1: execute until every task is terminal ──
+    // B10: stream = per-completion admission (the OpenResearch loop shape —
+    // a freed slot refills immediately, results land as they finish); wave
+    // (default) = B3 barriers, unchanged.
+    const scheduled = await Promise.resolve(store.getJob(jobId));
+    if (!scheduled || scheduled.status !== "active") return;
+    if (scheduled.policy.scheduling === "stream") {
+      await runStream(jobId, deps, log);
+    } else {
+      await runWaves(jobId, deps, log);
+    }
 
     const job = await Promise.resolve(store.getJob(jobId));
     if (!job) return;
@@ -775,12 +1159,23 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
 
     const judgeInput = buildJudgeMessages(job, { check: deps.judgeCheck });
     let judgeText: string | null = null;
+    // B10 bias guard: the judge must not grade its own family — when the
+    // caller named its model and the judge tag is tag-viable for it, judge
+    // with the best alternative instead (self-grading is the sharpest bias).
+    const judgeBiasAvoid =
+      biasGuardActive(job) && job.mode === "swarm"
+        ? pickBiasAvoidModel(judgeInput.tag, job.policy.budget, job.callerModel as string)
+        : null;
+    if (judgeBiasAvoid) {
+      log(null, "bias_avoided", `judge: caller model ${job.callerModel} avoided; judging with ${judgeBiasAvoid}`);
+    }
     try {
       const outcome = await dispatch({
         taskId: "__judge",
         tag: judgeInput.tag,
         modality: "text",
         alias: aliasForTag(judgeInput.tag, job.policy.budget),
+        assignedModel: judgeBiasAvoid,
         messages: judgeInput.messages,
         prompt: judgeInput.messages[0].content,
         timeoutMs: job.policy.task_timeout_ms,
@@ -914,6 +1309,9 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
           maxPerProvider: current.policy.max_per_provider,
           statOf: (model) => stats[model],
           penaltyOf: (model) => penalties[model] ?? 0,
+          // B10 bias guard: the caller's own model scores ×0.6 while a
+          // tag-viable alternative remains (assigned routing path).
+          avoidModel: biasGuardActive(current) ? (current.callerModel as string) : undefined,
           // B9: the live breaker feed — open providers score ×0.2 (guide
           // Part 8 formula), so a tripped provider stops winning
           // assignments until its breaker recovers.
@@ -966,6 +1364,17 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
         let prompt = effectivePrompt(current, task, byId);
         const alias = aliasForTag(task.tag, current.policy.budget);
         const assignment = assignments.get(taskId);
+        // B10 bias guard, alias routing: when the caller named its model and
+        // the tag's candidate pool contains it, dispatch the best ALTERNATIVE
+        // instead — same tag viability, no self-preference. No alternative →
+        // the alias dispatches as-is and jobToApi flags bias_same_model.
+        let biasAvoidModel: string | null = null;
+        if (!assignment && biasGuardActive(current) && (task.modality ?? MODALITY_BY_TAG[task.tag]) === "text") {
+          biasAvoidModel = pickBiasAvoidModel(task.tag, current.policy.budget, current.callerModel as string);
+          if (biasAvoidModel) {
+            log(taskId, "bias_avoided", `caller model ${current.callerModel} is tag-viable; dispatching ${biasAvoidModel} instead`);
+          }
+        }
         const started = now();
         const modality = taskModalityOf(task);
         // B8: compress the swarm context before fan-out (opt-in policy; text
@@ -999,7 +1408,7 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
             tag: task.tag,
             modality,
             alias,
-            assignedModel: assignment?.candidate.model ?? null,
+            assignedModel: assignment?.candidate.model ?? biasAvoidModel ?? null,
             messages: [{ role: "user", content: prompt }],
             prompt,
             timeoutMs: current.policy.task_timeout_ms,
@@ -1140,6 +1549,257 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
   }
 }
 
+/**
+ * B10 stream scheduler (OpenResearch auto-research loop shape): per-completion
+ * admission instead of wave barriers. The moment ANY task finishes, the next
+ * ready task starts in the freed slot — slots fill continuously up to
+ * max_concurrency, and each completion lands its bookkeeping immediately
+ * (blackboard merge + mailbox relay per finish, not per wave), so later
+ * tasks always see the freshest upstream evidence.
+ *
+ * Deliberately a parallel of runWaves rather than a refactor of it: both
+ * schedulers share every building block (effectivePrompt, leases, requeue,
+ * deadline, budget, bias guard, worktrees) and differ ONLY in admission
+ * discipline — the wave path is the battle-tested B3–B9 surface and stays
+ * byte-for-byte behaviorally identical.
+ *
+ * task.wave carries the 1-based dispatch ORDINAL in stream mode (each task
+ * its own row in jobToApi's waves view) — a tracing convenience, not a
+ * barrier.
+ */
+async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<void> {
+  const { store, dispatch } = deps;
+  const now = deps.now ?? Date.now;
+  let ordinal = 0;
+  const inflight = new Map<string, Promise<void>>();
+  /** Per-completion swarm bookkeeping (the "analyze each finish as it lands" move). */
+  const onCompletion = async (taskId: string, text: string | null): Promise<void> => {
+    if (text === null) return;
+    const job = await Promise.resolve(store.getJob(jobId));
+    if (!job || job.mode !== "swarm") return;
+    const summary = parseSummary(text);
+    const merged = mergeIntoBlackboard(job.blackboard, [{ taskId, summary }]);
+    await Promise.resolve(store.updateBlackboard(jobId, merged));
+    log(taskId, "blackboard_append", truncateLog(summary));
+    // Bounded A2A: one question per completed worker, relayed immediately.
+    const directives = parseAskDirectives(taskId, text);
+    if (directives.length === 0) return;
+    const ask = directives[0];
+    const fresh = await Promise.resolve(store.getJob(jobId));
+    const target = fresh?.tasks.find((task) => task.id === ask.to);
+    if (!target || target.state !== "done") {
+      log(taskId, "mailbox_skipped", `@ask target "${ask.to}" has no completed output`);
+      return;
+    }
+    if (isMediaModality(taskModalityOf(target))) {
+      log(taskId, "mailbox_skipped", `@ask target "${ask.to}" is a media task (${taskModalityOf(target)}) and cannot answer`);
+      return;
+    }
+    const answer = await relayQuestion(jobId, ask, target, deps, log);
+    const updated = await Promise.resolve(store.getJob(jobId));
+    const withAnswer = appendMailboxAnswer(updated?.blackboard ?? null, { from: ask.from, to: ask.to, question: ask.question, answer });
+    await Promise.resolve(store.updateBlackboard(jobId, withAnswer));
+    log(taskId, "mailbox_relayed", `to ${ask.to}: ${truncateLog(answer)}`);
+  };
+
+  for (;;) {
+    let current = await Promise.resolve(store.getJob(jobId));
+    if (!current || current.status !== "active") return;
+
+    const expired = await Promise.resolve(store.requeueExpiredLeases(jobId, now()));
+    if (expired.length > 0) {
+      for (const id of expired) log(id, "lease_expired", "worker lost; task requeued");
+      current = (await Promise.resolve(store.getJob(jobId))) ?? current;
+    }
+
+    if (now() >= current.deadlineAt) {
+      await Promise.resolve(store.setJobStatus(jobId, "failed", "deadline"));
+      log(null, "job_deadline", "deadline exceeded; remaining tasks stay queued");
+      return;
+    }
+
+    const running = current.tasks.filter((task) => task.state === "running");
+    const plan = nextWave(current.tasks);
+    const incomplete = current.tasks.filter((task) => task.state !== "done" && task.state !== "failed");
+
+    // B6 budget (stream semantics): once the budget is hit no NEW tasks are
+    // admitted; in-flight dispatches finish; remaining queued tasks abort
+    // unstarted — identical to the wave-path sweep.
+    const tokenBudget = current.policy.max_total_tokens;
+    const usedTokens = current.tasks.reduce(
+      (sum, task) => sum + (task.promptTokens ?? 0) + (task.completionTokens ?? 0),
+      0
+    );
+    const budgetExhausted = tokenBudget > 0 && usedTokens >= tokenBudget;
+    if (budgetExhausted && inflight.size === 0) {
+      let aborted = 0;
+      for (const task of current.tasks.filter((task) => task.state === "queued")) {
+        await Promise.resolve(
+          store.writeTaskTransition(jobId, task.id, {
+            state: "failed",
+            lastError: `budget exhausted (max_total_tokens ${tokenBudget})`,
+          })
+        );
+        log(task.id, "task_budget_aborted", "unstarted; token budget reached");
+        aborted += 1;
+      }
+      if (aborted > 0) {
+        log(null, "job_budget_exhausted", `${aborted} task(s) aborted unstarted; ${usedTokens} tokens used of ${tokenBudget}`);
+        await Promise.resolve(store.setJobStatus(jobId, "failed", "budget_exhausted"));
+        return;
+      }
+    }
+
+    // Admission: fill every free slot with the next ready task. In-flight =
+    // the UNION of state-running tasks and this loop's tracked launches
+    // (they overlap; counting both double-books a slot and reintroduces the
+    // barrier this scheduler exists to remove).
+    const byId = new Map(current.tasks.map((task) => [task.id, task]));
+    if (!budgetExhausted) {
+      const inFlightIds = new Set<string>([...running.map((task) => task.id), ...inflight.keys()]);
+      const ready = plan.ready.filter((id) => !inFlightIds.has(id));
+      let slots = current.policy.max_concurrency - inFlightIds.size;
+      if (slots > 0 && ready.length > 0) {
+        log(null, "stream_admit", `admitting ${Math.min(slots, ready.length)} task(s); ${inFlightIds.size} in flight`);
+      }
+      while (slots > 0 && ready.length > 0) {
+        const taskId = ready.shift() as string;
+        const task = byId.get(taskId);
+        if (!task) continue;
+        slots -= 1;
+        ordinal += 1;
+        const dispatchOrdinal = ordinal;
+        const launch = (async () => {
+          const leaseMs = Math.max(LEASE_MS, current.policy.task_timeout_ms + 30_000);
+          const leased = await Promise.resolve(store.acquireLease(jobId, taskId, leaseMs, now()));
+          if (!leased) return;
+          log(taskId, "task_start", `attempt ${task.attempts + 1}`);
+
+          let prompt = effectivePrompt(current, task, byId);
+          const alias = aliasForTag(task.tag, current.policy.budget);
+          // B10 bias guard, alias routing (same rule as the wave path).
+          let biasAvoidModel: string | null = null;
+          if (biasGuardActive(current) && (task.modality ?? MODALITY_BY_TAG[task.tag]) === "text") {
+            biasAvoidModel = pickBiasAvoidModel(task.tag, current.policy.budget, current.callerModel as string);
+            if (biasAvoidModel) {
+              log(taskId, "bias_avoided", `caller model ${current.callerModel} is tag-viable; dispatching ${biasAvoidModel} instead`);
+            }
+          }
+          const started = now();
+          const modality = taskModalityOf(task);
+          if (current.policy.compress_context && current.mode === "swarm" && modality === "text") {
+            const compressed = compressSwarmContext(prompt);
+            if (compressed.applied) {
+              prompt = compressed.text;
+              log(taskId, "context_compressed", `${compressed.originalTokens}→${compressed.compressedTokens} tokens (caveman/lite)`);
+            }
+          }
+
+          let worktreeSession: WorktreeSession | null = null;
+          if (current.policy.execution_target === "opendev" || modality === "worktree") {
+            worktreeSession = await ensureTaskWorktree(current.policy.project_id || "default", taskId);
+            if (worktreeSession) {
+              log(taskId, "worktree_allocated", `branch: ${worktreeSession.branchName}`);
+              await syncBlackboardToWorktree(worktreeSession, current.blackboard);
+            }
+          }
+
+          let outcome: Awaited<ReturnType<TaskDispatch>>;
+          try {
+            outcome = await dispatch({
+              taskId,
+              tag: task.tag,
+              modality,
+              alias,
+              assignedModel: biasAvoidModel,
+              messages: [{ role: "user", content: prompt }],
+              prompt,
+              timeoutMs: current.policy.task_timeout_ms,
+              wave: dispatchOrdinal,
+            });
+          } catch (error) {
+            outcome = { ok: false, error: error instanceof Error ? error.message : "dispatch threw" };
+          }
+          const latency = now() - started;
+
+          if (outcome.ok && worktreeSession && current.policy.verify_supervisor) {
+            log(taskId, "supervisor_verification_start", "Running detached test runner in worktree");
+            const verifyRun = await triggerWorktreeVerification(worktreeSession, current.policy.verify_command);
+            if (verifyRun) {
+              const verifyOutcome = await waitForVerification(verifyRun.runId, current.policy.task_timeout_ms);
+              if (verifyOutcome.status !== "succeeded") {
+                log(taskId, "supervisor_verification_failed", `Exit code ${verifyOutcome.exitCode ?? "?"}`);
+                outcome = {
+                  ok: false,
+                  error: `Verification tests failed (exit code ${verifyOutcome.exitCode}):\n${verifyOutcome.log.slice(0, 1000)}`,
+                };
+              } else {
+                log(taskId, "supervisor_verification_passed", "All tests passed in worktree");
+                const diff = await getSessionWorktreeDiff(worktreeSession);
+                if (diff?.filesChanged?.length) {
+                  outcome.text += `\n\n[Worktree Commits]: Modified ${diff.filesChanged.length} files (${diff.filesChanged.join(", ")})`;
+                }
+              }
+            }
+          }
+
+          if (outcome.ok) {
+            const usage = outcome.usage ?? null;
+            await Promise.resolve(
+              store.writeTaskTransition(jobId, taskId, {
+                state: "done",
+                wave: dispatchOrdinal,
+                assignedModel: outcome.model,
+                assignedProvider: outcome.provider,
+                result: outcome.text,
+                latencyMs: latency,
+                lastError: null,
+                promptTokens: usage ? usage.prompt_tokens : null,
+                completionTokens: usage ? usage.completion_tokens : null,
+              })
+            );
+            log(taskId, "task_done", `${latency}ms via ${outcome.model ?? alias}`);
+            await onCompletion(taskId, outcome.text);
+          } else {
+            const attempts = task.attempts + 1;
+            if (attempts >= current.policy.max_attempts) {
+              await Promise.resolve(
+                store.writeTaskTransition(jobId, taskId, { state: "failed", attempts, wave: dispatchOrdinal, lastError: outcome.error })
+              );
+              log(taskId, "task_failed", `attempts exhausted (${attempts}): ${outcome.error}`);
+            } else {
+              await Promise.resolve(store.writeTaskTransition(jobId, taskId, { state: "queued", attempts, lastError: outcome.error }));
+              log(taskId, "task_requeued", `attempt ${attempts} failed: ${outcome.error}`);
+            }
+          }
+        })();
+        const tracked = launch.finally(() => {
+          inflight.delete(taskId);
+        });
+        inflight.set(taskId, tracked);
+      }
+    }
+
+    // Nothing in flight and nothing admittable: drained (judge phase decides)
+    // or genuinely blocked (failed deps, nothing running).
+    if (inflight.size === 0) {
+      if (plan.ready.length === 0) {
+        if (incomplete.length === 0) return;
+        await Promise.resolve(store.setJobStatus(jobId, "failed", "blocked"));
+        log(null, "job_blocked", plan.blocked.map((b) => `${b.id} (${b.reason})`).join("; "));
+        return;
+      }
+      if (budgetExhausted) continue; // sweep path above handles it next tick
+      continue; // lease lost between read and acquire — retry admission
+    }
+
+    // Wait for the FIRST completion, then loop: reconcile fresh state and
+    // refill the freed slot. The wait is the wake-up signal, not the source
+    // of truth — every transition is re-read from the store on loop top.
+    await Promise.race(inflight.values());
+  }
+}
+
 async function relayQuestion(
   jobId: string,
   ask: { from: string; to: string; question: string },
@@ -1204,6 +1864,11 @@ export function jobToApi(job: OrchestrateJob): Record<string, unknown> {
     failure_reason: job.failureReason,
     judge_rounds: job.judgeRounds,
     blackboard: job.blackboard ?? null,
+    // B10: lineage + bias visibility. caller_model is what the brain named
+    // itself; bias_same_model marks tasks that STILL ran on it (no viable
+    // alternative existed) so the bias is visible, never silent.
+    caller_model: job.callerModel,
+    parent_job_id: job.parentJobId,
     usage: {
       prompt_tokens: promptTokens,
       completion_tokens: completionTokens,
@@ -1227,6 +1892,7 @@ export function jobToApi(job: OrchestrateJob): Record<string, unknown> {
       verdict: task.verdict,
       error: task.lastError,
       result: task.result,
+      bias_same_model: job.callerModel !== null && task.assignedModel === job.callerModel,
     })),
     log: job.log.slice(-100),
   };

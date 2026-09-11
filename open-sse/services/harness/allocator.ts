@@ -106,6 +106,15 @@ export type AssignOptions = {
   /** Judge-drift quality penalties per model (subtracted from quality). */
   penaltyOf?: (model: string) => number;
   /**
+   * B10 bias guard: the calling agent's own model. A same-model sub-agent
+   * inherits the caller's blind spots (self-preference bias), so it scores
+   * ×BIAS_AVOID_MULTIPLIER while any tag-viable alternative remains — a
+   * penalty, not a ban: with no alternative, or an overwhelmingly better
+   * caller model, the caller model still wins (and the task is flagged
+   * bias_same_model in the API). Undefined = no guard (B3–B9 behavior).
+   */
+  avoidModel?: string;
+  /**
    * Breaker state per candidate (B9: the feed is live — the plan route
    * passes the provider-keyed circuit-breaker registry via
    * src/lib/harness/breakerFeed.ts). Provider is the candidate's registry
@@ -113,6 +122,9 @@ export type AssignOptions = {
    */
   breakerOf?: (model: string, provider: string | null) => boolean;
 };
+
+/** B10 bias guard: score multiplier for the caller's own model. */
+export const BIAS_AVOID_MULTIPLIER = 0.6;
 
 export type Assignment = {
   task: string;
@@ -154,7 +166,7 @@ export function assignModels(
         quality,
         stat: options.statOf?.(candidate.model),
         breakerOpen: options.breakerOf?.(candidate.model, candidate.provider ?? null) ?? false,
-      });
+      }) * (options.avoidModel && candidate.model === options.avoidModel ? BIAS_AVOID_MULTIPLIER : 1);
       return { candidate, score, index };
     });
     // Highest score wins; ties keep the tag index's original order (index).

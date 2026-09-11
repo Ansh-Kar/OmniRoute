@@ -23,6 +23,9 @@ export async function GET(
 
   const { jobId } = await params;
   const waitSeconds = clampWait(new URL(request.url).searchParams.get("wait"));
+  // B10 drive-by fix: the long-poll's documented 60s cap was never enforced —
+  // a stuck-active job span forever. Bounded by wall clock now.
+  const deadlineMs = Date.now() + waitSeconds * 1000;
 
   for (;;) {
     const job = store.getJob(jobId);
@@ -32,7 +35,7 @@ export async function GET(
         { status: 404 }
       );
     }
-    if (job.status === "done" || job.status === "failed" || waitSeconds === 0) {
+    if (job.status === "done" || job.status === "failed" || Date.now() >= deadlineMs) {
       return NextResponse.json(jobToApi(job), { status: 200 });
     }
     // Long-poll: wait for a terminal status or the wait budget to expire.

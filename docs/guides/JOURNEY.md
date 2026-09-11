@@ -271,3 +271,48 @@ passed `false` — a multiplier with no data source.
   ticked with build annotations when the fork-side mechanics ship —
   the two live-client-only rows are the only ones still open, and they
   say so.
+
+## B10 — Objective orchestration (the OpenResearch adaptation)
+
+**What shipped**: `/v1/orchestrate/objectives` (objective-first; tags
+inferred, never user-chosen), the caller-model bias guard,
+`policy.scheduling: "stream"` (per-completion admission), refill
+(`POST /jobs/{id}/tasks`), spawn (`POST /v1/orchestrate/spawn` — no
+nesting, in-flight cap, brief isolation), and the two wake endpoints
+(`wait-first`, multi-job `wait`). Plus the OpenDev-skill guide rewritten
+to the new protocol.
+
+**Why these, from their design**: their auto-research loop is built on
+per-completion control (wake on first finish, reconcile, refill) — our
+waves were barriers, so the loop shape was impossible. Their `agent
+spawn` rules (self-contained brief, no nesting, in-flight cap, explicit
+compute authorization) translated almost verbatim. Their "the caller
+names work" philosophy became tag inference; the "harness picks models"
+half is exactly what our alias/allocator stack already does.
+
+**Decisions**:
+- Bias guard is a penalty (×0.6 / best-alternative pin), not a ban — a
+  single-model deployment must still work, flagged not blocked.
+- Stream mode is a parallel scheduler, not a refactor of runWaves: the
+  wave path is the shipped B3–B9 surface; both share every building
+  block. The first stream test caught a double-count bug (running-state
+  ∪ tracked-launches) that would have silently reintroduced the barrier.
+- The wait endpoints return the FULL job view — their discipline, verbatim:
+  the wake is a signal, the store is the source of truth.
+- Embeddings-based routing: deferred (designed seam = classifier stage
+  boundaries); it needs an embedding source decision (provider
+  /v1/embeddings vs local transformers) — a build of its own.
+
+**Scars**:
+- The other session's Build 1 landed with type breaks our fastcheck
+  couldn't see (it covers 27 core files + imports — never the harness
+  slice). `tsconfig.harness-check.json` now typechecks the whole changed
+  surface in ~17s; it immediately caught the missing Required<> policy
+  fields, the un-exported TaskType, and the worktree-modality mismatch.
+- The jobs `?wait=` long-poll never enforced its documented 60s cap —
+  found by reading while writing wait-first. Bounded now.
+- `pickBiasAvoidModel` returned a candidate object where every caller
+  wanted a string — the test caught it because tsc had aborted on a
+  config error (TS6053 missing file) before typechecking. Lesson: a tsc
+  run that errors on config checked nothing; always surface config-level
+  failures as build-stop.

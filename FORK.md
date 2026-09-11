@@ -390,6 +390,63 @@ rejected alternatives, and the process scars (drift-penalty rounding,
 silent tarball links, box-bound tsc). The workspace README gained the
 same usage section and a journey pointer.
 
+### 5l. B10 — Objective orchestration for the brain (`feat(harness)`)
+
+The OpenResearch adaptation (alphaXiv), translated from their research
+agent workspace to our gateway: **the caller names objectives, not models
+and not tags.**
+
+- **Tag inference** — `tag` optional on every plan/objective task; the
+  classifier's stage-1 heuristics infer it from the prompt (`tag_inferred`
+  log, `inferred_tags` in responses). Explicit tags still win; unknown
+  tags still 400. `objectiveToPlanBody` normalizes the new
+  `POST /v1/orchestrate/objectives` body (subtasks optional — a bare
+  objective becomes the single task) through the ONE admission path
+  (validatePlan).
+- **Bias guard** — `caller_model` on the job (SQLite column; jobFromPlan
+  from the body). When set (and `policy.bias_guard` not false): alias
+  routing pins the best tag-viable NON-caller model (`bias_avoided`
+  logged); assigned routing scores the caller's model ×0.6
+  (allocator `avoidModel`); the judge also avoids it (self-grading is the
+  sharpest bias); no alternative → runs anyway, flagged
+  `bias_same_model` per task in jobToApi. Penalty, not a ban — never
+  deadlocks a single-model deployment.
+- **Stream scheduling** — `policy.scheduling: "wave"|"stream"` (wave
+  default, byte-identical B3 barriers). Stream = per-completion
+  admission (the `orx exp wait` loop shape): a freed slot refills
+  immediately (no barrier), `task.wave` carries the dispatch ordinal,
+  swarm blackboard merges + mailbox relays land per completion. The
+  stream loop is deliberately parallel to runWaves (shared building
+  blocks, different admission discipline) so the battle-tested wave path
+  stays untouched. Tests caught the double-count bug (running-state ∪
+  tracked-launches) that would have quietly reintroduced the barrier.
+- **Refill + spawn + wakes** — `POST /jobs/{id}/tasks` appends to a
+  LIVE job (deps may reference existing tasks; 409 `job_terminal`);
+  `POST /v1/orchestrate/spawn` creates a helper job with a self-contained
+  brief (context copied verbatim, never derived), no nesting (409), an
+  in-flight cap of `policy.max_children` (429, default 4 ≥ the admission
+  floor of 2), and the bias guard propagates to children;
+  `GET /jobs/{id}/wait-first` wakes on the first task completion since
+  call start (baseline-diffed `completed_since`, `drained` exit);
+  `GET /v1/orchestrate/wait?job_ids=` is the multi-job analog.
+- **Drive-by fixes** — the jobs route's `?wait=` long-poll claimed a 60s
+  cap but never enforced it (stuck-active job = infinite spin); bounded
+  by wall clock now. Build-1 (parallel session) type breaks repaired:
+  the OpenDev policy fields were missing from the Required<> assembly
+  (every persisted row carried undefined), `TaskType` wasn't re-exported,
+  and "worktree" modality crashed `pickMediaModel`'s type (it's an
+  execution location, not an endpoint family — dispatch treats it as
+  text). New `tsconfig.harness-check.json` gate: tsc over the whole
+  harness/orchestrate slice (fastcheck never covered these files — its
+  21s "clean" was checking 27 core files + imports).
+
+Tests: `tests/unit/services/harness-b10.test.ts` (25 — inference,
+objective/spawn normalization, allocator penalty-not-ban, e2e alias/assigned
+bias avoidance, stream refill-before-barrier timing proof, wave still
+barriers, stream retry/deadline/budget/swarm-per-completion, refill
+validation, lineage, jobToApi surface). Combined batch 177/177; harness
+tsc 0 errors; openapi 709/714 (99.3%).
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

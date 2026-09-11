@@ -107,6 +107,14 @@ export function ensureOrchestrateTables(): void {
   } catch {
     // Column already present.
   }
+  // B10: bias guard (caller's own model to avoid) + spawn lineage.
+  for (const column of ["caller_model TEXT", "parent_job_id TEXT"]) {
+    try {
+      db.exec(`ALTER TABLE orchestrate_jobs ADD COLUMN ${column}`);
+    } catch {
+      // Column already present.
+    }
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS orchestrate_model_drift (
       model TEXT PRIMARY KEY,
@@ -150,6 +158,8 @@ function jobFromRow(row: any, tasks: OrchestrateTask[], log: OrchestrateLogEntry
     status: row.status as JobStatus,
     failureReason: row.failure_reason ?? null,
     idempotencyKey: row.idempotency_key ?? null,
+    callerModel: row.caller_model ?? null,
+    parentJobId: row.parent_job_id ?? null,
     createdAt: row.created_at,
     deadlineAt: row.deadline_at,
     judgeRounds: typeof row.judge_rounds === "number" ? row.judge_rounds : 0,
@@ -172,8 +182,8 @@ export class SqliteJobsStore {
     const insertJob = db.prepare(
       `INSERT INTO orchestrate_jobs (
          job_id, goal, mode, policy, blackboard, status, failure_reason,
-         idempotency_key, created_at, deadline_at
-       ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
+         idempotency_key, caller_model, parent_job_id, created_at, deadline_at
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`
     );
     insertJob.run(
       job.jobId,
@@ -183,6 +193,8 @@ export class SqliteJobsStore {
       job.blackboard ? JSON.stringify(job.blackboard) : null,
       job.status,
       idempotencyKey,
+      job.callerModel ?? null,
+      job.parentJobId ?? null,
       job.createdAt,
       job.deadlineAt
     );
@@ -201,11 +213,15 @@ export class SqliteJobsStore {
         JSON.stringify(task.dependsOn)
       );
     }
+    // B10: pre-creation log lines (tag_inferred) persist with the job.
     const insertLog = db.prepare(
       `INSERT INTO orchestrate_job_log (timestamp, job_id, task_id, event, detail)
-       VALUES (?, ?, NULL, 'job_created', ?)`
+       VALUES (?, ?, ?, ?, ?)`
     );
-    insertLog.run(job.createdAt, job.jobId, `${job.tasks.length} tasks, mode ${job.mode}`);
+    for (const entry of job.log) {
+      insertLog.run(entry.timestamp, entry.jobId || job.jobId, entry.taskId, entry.event, entry.detail);
+    }
+    insertLog.run(job.createdAt, job.jobId, null, "job_created", `${job.tasks.length} tasks, mode ${job.mode}`);
     return this.getJob(job.jobId) as OrchestrateJob;
   }
 
@@ -419,5 +435,55 @@ export class SqliteJobsStore {
       `INSERT INTO orchestrate_job_log (timestamp, job_id, task_id, event, detail)
        VALUES (?, ?, ?, ?, ?)`
     ).run(timestamp, entry.jobId, entry.taskId, entry.event, entry.detail);
+  }
+
+  /** B10 refill: append queued tasks to an ACTIVE (or judging) job. */
+  appendTasks(jobId: string, tasks: OrchestrateTask[]): OrchestrateJob | "job_terminal" | "duplicate_id" | null {
+    ensureOrchestrateTables();
+    const db = getDbInstance();
+    const row = db.prepare(`SELECT status FROM orchestrate_jobs WHERE job_id = ?`).get(jobId) as
+      | { status: string }
+      | undefined;
+    if (!row) return null;
+    if (row.status !== "active" && row.status !== "judging") return "job_terminal";
+    const existing = new Set(
+      (db.prepare(`SELECT task_id FROM orchestrate_tasks WHERE job_id = ?`).all(jobId) as Array<{ task_id: string }>).map(
+        (task) => task.task_id
+      )
+    );
+    for (const task of tasks) {
+      if (existing.has(task.id)) return "duplicate_id";
+    }
+    const insertTask = db.prepare(
+      `INSERT INTO orchestrate_tasks (
+         job_id, task_id, tag, modality, prompt, depends_on, state, attempts
+       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0)`
+    );
+    for (const task of tasks) {
+      insertTask.run(
+        jobId,
+        task.id,
+        task.tag,
+        task.modality ?? MODALITY_BY_TAG[task.tag],
+        task.prompt,
+        JSON.stringify(task.dependsOn)
+      );
+    }
+    return this.getJob(jobId) as OrchestrateJob;
+  }
+
+  /** B10 spawn: the parent's child jobs, oldest first (all states). */
+  listChildJobs(parentJobId: string): OrchestrateJob[] {
+    ensureOrchestrateTables();
+    const db = getDbInstance();
+    const rows = db
+      .prepare(`SELECT job_id FROM orchestrate_jobs WHERE parent_job_id = ? ORDER BY created_at ASC`)
+      .all(parentJobId) as Array<{ job_id: string }>;
+    const children: OrchestrateJob[] = [];
+    for (const row of rows) {
+      const job = this.getJob(row.job_id);
+      if (job) children.push(job);
+    }
+    return children;
   }
 }

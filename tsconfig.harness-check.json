@@ -1,0 +1,33 @@
+{
+  "extends": "./tsconfig.typecheck-core.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"],
+      "@omniroute/open-sse": ["./open-sse"],
+      "@omniroute/open-sse/*": ["./open-sse/*"],
+      "@omniroute/browser-pool": ["./packages/browser-pool/src"],
+      "playwright": ["./.fastcheck-stubs/playwright.d.ts"],
+      "@huggingface/transformers": ["./.fastcheck-stubs/huggingface.d.ts"]
+    }
+  },
+  "files": [
+    "open-sse/services/harness/orchestrator.ts",
+    "open-sse/services/harness/allocator.ts",
+    "open-sse/services/harness/classifier.ts",
+    "open-sse/services/harness/swarmMode.ts",
+    "open-sse/services/harness/capabilityAliases.ts",
+    "open-sse/services/harness/opendevBridge.ts",
+    "open-sse/services/harness/testVerifier.ts",
+    "src/lib/orchestrator/dispatch.ts",
+    "src/lib/db/orchestrateJobs.ts",
+    "src/app/api/v1/orchestrate/plan/route.ts",
+    "src/app/api/v1/orchestrate/quick/route.ts",
+    "src/app/api/v1/orchestrate/objectives/route.ts",
+    "src/app/api/v1/orchestrate/spawn/route.ts",
+    "src/app/api/v1/orchestrate/wait/route.ts",
+    "src/app/api/v1/orchestrate/jobs/[jobId]/route.ts",
+    "src/app/api/v1/orchestrate/jobs/[jobId]/wait-first/route.ts",
+    "src/app/api/v1/orchestrate/jobs/[jobId]/tasks/route.ts",
+    "tests/unit/services/harness-b10.test.ts"
+  ]
+}

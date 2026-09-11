@@ -13636,6 +13636,272 @@ paths:
         "200":
           description: OK
 
+  /api/v1/orchestrate/objectives:
+    post:
+      tags: [Harness]
+      summary: Objective-first orchestration for agent callers (B10, OpenResearch adaptation)
+      description: >-
+        Fork(harness B10). The calling agent (Hermes) names an OBJECTIVE —
+        what it wants accomplished — never models and never tags: subtasks
+        are optional (absent means the objective is the single task),
+        per-task tags are optional (inferred from each prompt by the
+        classifier's stage-1 heuristics, logged as tag_inferred), and
+        caller_model names the calling agent so the bias guard avoids
+        routing sub-agent work to the caller's own model while a tag-viable
+        alternative exists (no alternative: the task runs and is flagged
+        bias_same_model). policy.scheduling: wave (default, B3 barriers) or
+        stream (per-completion admission — a freed slot refills immediately,
+        the OpenResearch auto-research loop shape). Same runner, store, and
+        admission semantics as /v1/orchestrate/plan. Idempotency-Key replays
+        return the original job, never re-execute.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+          required: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [objective]
+              properties:
+                objective:
+                  type: string
+                  description: What the caller wants accomplished.
+                subtasks:
+                  type: array
+                  description: Optional decomposition; ids and tags generate/infer when omitted.
+                  items:
+                    type: object
+                    required: [prompt]
+                    properties:
+                      id:
+                        type: string
+                      prompt:
+                        type: string
+                      tag:
+                        type: string
+                      depends_on:
+                        type: array
+                        items:
+                          type: string
+                caller_model:
+                  type: string
+                  description: The calling agent's model; enables the bias guard.
+                mode:
+                  type: string
+                  enum: [parallel, swarm]
+                blackboard:
+                  type: object
+                policy:
+                  $ref: '#/components/schemas/OrchestratePolicy'
+      responses:
+        "202":
+          description: Job accepted; poll or wait-first.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Invalid body (per-field errors).
+  /api/v1/orchestrate/spawn:
+    post:
+      tags: [Harness]
+      summary: Delegate a self-contained task to a helper job (B10, orx agent spawn analog)
+      description: >-
+        Fork(harness B10). Spawn an independent helper JOB under a parent:
+        the helper receives only its brief (+ the explicit context object,
+        copied verbatim — never the parent's tasks or results), runs with
+        its own runner, and the caller wakes on completion via
+        /v1/orchestrate/wait. No nesting (a helper cannot spawn; 409
+        spawn_nesting). In-flight cap: policy.max_children active helpers
+        per parent (default 4; 429 spawn_cap). The bias guard propagates —
+        the child inherits the parent's caller_model unless overridden.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+          required: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [parent_job_id, brief]
+              properties:
+                parent_job_id:
+                  type: string
+                brief:
+                  type: string
+                  description: Self-contained task description (the helper sees nothing else).
+                title:
+                  type: string
+                tag:
+                  type: string
+                caller_model:
+                  type: string
+                context:
+                  type: object
+                  description: Explicit blackboard snapshot for the helper.
+                policy:
+                  $ref: '#/components/schemas/OrchestratePolicy'
+      responses:
+        "202":
+          description: Helper job created (job_id, parent_job_id, in_flight, cap).
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          description: Unknown parent job.
+        "409":
+          description: spawn_nesting (helpers cannot spawn).
+        "429":
+          description: spawn_cap (max_children active helpers reached).
+  /api/v1/orchestrate/wait:
+    get:
+      tags: [Harness]
+      summary: Multi-job first-completion wake (B10, orx exp wait --project analog)
+      description: >-
+        Fork(harness B10). Long-poll until the FIRST job among job_ids
+        reaches a terminal state (done|failed) since the call started, then
+        return that job's full view plus a status map of the rest. The wake
+        is a signal, not the source of truth — reconcile from the states
+        map every wake. drained (nothing left to wait for) is the exit
+        condition. 500ms ticks; timeout capped at 60s; timeout=0 snapshots
+        immediately. Unknown ids report as "unknown" (drains, never wedges).
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: job_ids
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Comma-separated job ids.
+        - name: timeout
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Wait budget in seconds (default 0, max 60).
+      responses:
+        "200":
+          description: "{ woken, job, states, drained }."
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Missing job_ids.
+  /api/v1/orchestrate/jobs/{jobId}/wait-first:
+    get:
+      tags: [Harness]
+      summary: Per-completion wake for one job (B10, orx exp wait analog)
+      description: >-
+        Fork(harness B10). Long-poll until the FIRST task of the job
+        reaches a terminal state since the call started (or the whole job
+        goes terminal), then return the FULL job view (the reconcile source
+        of truth) plus completed_since (newly terminal task ids vs the call
+        start) and drained (job terminal — the exit condition). Re-issue
+        per tick; a task that finished while you analyzed the previous one
+        will not appear in the next call's completed_since — re-read the
+        task list every wake. 500ms ticks; timeout capped at 60s.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: timeout
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Wait budget in seconds (default 0, max 60).
+      responses:
+        "200":
+          description: Full job view + completed_since + drained.
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          description: Unknown job.
+  /api/v1/orchestrate/jobs/{jobId}/tasks:
+    post:
+      tags: [Harness]
+      summary: Append tasks to a running job (B10 refill)
+      description: >-
+        Fork(harness B10). Refill the freed slot: append tasks to an ACTIVE
+        job; the runner picks them up on its next admission pass (stream
+        scheduling: within one completion; wave: next wave). depends_on may
+        reference tasks already on the job; ids generate when absent; tags
+        infer when absent (logged tag_inferred). 409 job_terminal when
+        nothing is running to pick them up — spawn or submit a new objective
+        instead. Idempotency-Key replays return the current job view.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+          required: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tasks]
+              properties:
+                tasks:
+                  type: array
+                  items:
+                    type: object
+                    required: [prompt]
+                    properties:
+                      id:
+                        type: string
+                      prompt:
+                        type: string
+                      tag:
+                        type: string
+                      depends_on:
+                        type: array
+                        items:
+                          type: string
+      responses:
+        "202":
+          description: Tasks appended (appended count, inferred_tags).
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Invalid body (per-field details).
+        "404":
+          description: Unknown job.
+        "409":
+          description: job_terminal or duplicate_id.
+
 components:
   securitySchemes:
     BearerAuth:

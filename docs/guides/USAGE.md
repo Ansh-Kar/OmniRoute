@@ -211,3 +211,70 @@ sub-call; user replies never name models, routes, or providers.
 - `max_total_tokens` breach: unstarted tasks abort
   (`task_budget_aborted`), in-flight dispatches finish, job fails
   `budget_exhausted`.
+
+## 10. Objectives — `POST /v1/orchestrate/objectives` (B10)
+
+The agent surface (OpenResearch adaptation): name an **objective**, not a
+plan. Subtasks optional (absent → the objective is the single task);
+per-task `tag` optional (inferred from each prompt, logged `tag_inferred`);
+`caller_model` optional (the calling agent naming itself).
+
+```json
+{
+  "objective": "Build and verify a JWT auth module",
+  "subtasks": [
+    { "prompt": "Write the token issuer in typescript" },
+    { "prompt": "Write the integration tests", "depends_on": ["t1"] }
+  ],
+  "caller_model": "gpt-4o",
+  "policy": { "scheduling": "stream", "max_rounds": 3 }
+}
+```
+
+→ `202 {ok, job_id, status:"active", accepted, inferred_tags, caller_model,
+bias_guard, scheduling}` — same runner, store, and semantics as `/plan`.
+
+**Bias guard** (active when `caller_model` is set and `policy.bias_guard`
+isn't false): sub-agent and judge dispatches avoid the caller's own model
+while a tag-viable alternative exists. Alias routing pins the best
+alternative (logged `bias_avoided`); assigned routing scores the caller's
+model ×0.6. No alternative → the task runs anyway and is flagged
+`bias_same_model: true` in the job view — visible, never silent, never a
+deadlock.
+
+## 11. Per-completion loop — `wait-first`, refill, spawn (B10)
+
+The OpenResearch auto-research loop shape, on our job model:
+
+```bash
+# wake on the FIRST task completion since call start (not a barrier):
+curl "http://localhost:20128/v1/orchestrate/jobs/$JOB/wait-first?timeout=30"
+# → {…full job view…, completed_since: ["t2"], drained: false}
+# The wake is a signal, NOT the source of truth: re-read the full task
+# list every wake; a task finished while you analyzed the last one won't
+# appear in the next completed_since. drained:true = stop.
+
+# refill the freed slot while the job runs:
+curl -X POST "http://localhost:20128/v1/orchestrate/jobs/$JOB/tasks" \
+  -d '{"tasks": [{"prompt": "Now benchmark the winner", "depends_on": ["t1"]}]}'
+# → 202 {appended, inferred_tags}; 409 job_terminal when the job ended.
+
+# delegate a SELF-CONTAINED helper job (no nesting, in-flight cap):
+curl -X POST "http://localhost:20128/v1/orchestrate/spawn" \
+  -d '{"parent_job_id": "'"$JOB"'", "brief": "Survey X, read-only, output 10 lines"}'
+# → 202 {job_id, parent_job_id, in_flight, cap}
+#   409 spawn_nesting (helpers can't spawn) · 429 spawn_cap (max_children)
+
+# wake when ANY of several jobs completes (the exp-wait --project analog):
+curl "http://localhost:20128/v1/orchestrate/wait?job_ids=$A,$B&timeout=30"
+# → {woken: "$B", job: {…}, states: {$A: "active", $B: "done"}, drained: false}
+```
+
+**`policy.scheduling`**: `wave` (default — B3 barriers, unchanged) or
+`stream` (per-completion admission: the moment any task finishes, the next
+ready task starts in the freed slot; `task.wave` carries the dispatch
+ordinal; swarm blackboard merges land per completion, not per wave).
+
+New policy fields: `scheduling` (wave|stream), `bias_guard` (bool, default
+true), `max_children` (2–16, default 4). Job view adds `caller_model`,
+`parent_job_id`, per-task `bias_same_model`.
