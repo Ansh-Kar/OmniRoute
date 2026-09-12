@@ -253,8 +253,8 @@ test("store(inmem): aggregateModelStats spans jobs and counts done/failed/latenc
   store.writeTaskTransition("job_b5b", "t1", { state: "failed", assignedModel: "m1" });
   store.writeTaskTransition("job_b5b", "t2", { state: "done", assignedModel: "m2", latencyMs: 1_000 });
   const stats = store.aggregateModelStats();
-  assert.deepEqual(stats.m1, { successes: 2, failures: 1, totalLatencyMs: 6_000 });
-  assert.deepEqual(stats.m2, { successes: 1, failures: 0, totalLatencyMs: 1_000 });
+  assert.deepEqual(stats.m1, { successes: 2, failures: 1, totalLatencyMs: 6_000, p50LatencyMs: 2_000, p95LatencyMs: 4_000 });
+  assert.deepEqual(stats.m2, { successes: 1, failures: 0, totalLatencyMs: 1_000, p50LatencyMs: 1_000, p95LatencyMs: 1_000 });
 });
 
 test("store(inmem): judge drift — two consecutive fails penalize, pass resets, cap holds", () => {
@@ -297,7 +297,7 @@ test("store(sqlite): lease/steal/requeue + stats + drift parity with InMemory", 
 
   store.writeTaskTransition("job_b5", "t1", { state: "done", assignedModel: "m1", latencyMs: 3_000 });
   store.writeTaskTransition("job_b5", "t2", { state: "failed", assignedModel: "m1" });
-  assert.deepEqual(store.aggregateModelStats().m1, { successes: 1, failures: 1, totalLatencyMs: 3_000 });
+  assert.deepEqual(store.aggregateModelStats().m1, { successes: 1, failures: 1, totalLatencyMs: 3_000, p50LatencyMs: 3_000, p95LatencyMs: 3_000 });
 
   assert.equal(store.applyJudgeVerdict("m1", false).penalized, false);
   assert.deepEqual(store.applyJudgeVerdict("m1", false), { penalty: JUDGE_DRIFT_PENALTY, penalized: true });

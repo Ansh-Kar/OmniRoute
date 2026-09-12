@@ -342,6 +342,20 @@ export async function registerNodejs(): Promise<void> {
   // scoring for generic providers in the App Router production runtime.
   await registerQuotaFetchers();
 
+  // B13: registry refresh at boot — rebuild the tag index from the live
+  // provider/model registry (new models in, DEPRECATED MODELS DELETED) and
+  // stamp the registry version. Best-effort: a refresh failure must never
+  // block boot; the /v1/router/* routes self-heal on staleness.
+  try {
+    const { refreshRegistry } = await import(
+      "@omniroute/open-sse/services/harness/capabilityRegistry.ts"
+    );
+    const version = refreshRegistry();
+    console.log(`[STARTUP] capability registry refreshed: version ${version.version}`);
+  } catch (err: unknown) {
+    console.warn("[STARTUP] capability registry refresh skipped:", err instanceof Error ? err.message : err);
+  }
+
   // Guarantee the SQLite singleton — including a sql.js WASM pre-init when
   // both synchronous drivers (better-sqlite3, node:sqlite) are unavailable —
   // is ready before ANY other startup step reaches getDbInstance(). This

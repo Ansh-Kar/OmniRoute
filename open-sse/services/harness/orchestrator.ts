@@ -231,6 +231,12 @@ export type OrchestrateTask = {
   /** B6: token usage recorded from the serving response (null = not reported). */
   promptTokens: number | null;
   completionTokens: number | null;
+  /**
+   * B13: epoch ms when the task reached a terminal state (done|failed) —
+   * the runtime-stats window anchor. Null while queued/running and on rows
+   * persisted pre-B13.
+   */
+  finishedAt: number | null;
 };
 
 export type OrchestrateJob = {
@@ -625,6 +631,7 @@ export function taskRowsFromSpecs(
     leaseUntil: null,
     promptTokens: null,
     completionTokens: null,
+      finishedAt: null,
   }));
 }
 
@@ -814,6 +821,57 @@ export interface JobsStore {
   appendLog(entry: Omit<OrchestrateLogEntry, "timestamp">, timestamp: number): Promise<void> | void;
 }
 
+
+/** B13: runtime window (30d); NULL finishedAt (pre-B13 rows) counts as in-window. */
+const IN_MEMORY_STATS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+function inMemoryPercentile(sorted: number[], p: number): number | null {
+  if (sorted.length === 0) return null;
+  const rank = Math.min(sorted.length, Math.max(1, Math.ceil((p / 100) * sorted.length)));
+  return sorted[rank - 1];
+}
+
+function inMemoryTaskStats(
+  jobs: IterableIterator<OrchestrateJob>,
+  byTag: string | null
+): Record<string, ModelStat> {
+  const cutoff = Date.now() - IN_MEMORY_STATS_WINDOW_MS;
+  const groups = new Map<string, { successes: number; failures: number; totalLatencyMs: number; latencies: number[] }>();
+  for (const job of jobs) {
+    for (const task of job.tasks) {
+      if (!task.assignedModel) continue;
+      if (task.state !== "done" && task.state !== "failed") continue;
+      if (task.finishedAt !== null && task.finishedAt < cutoff) continue;
+      const key = byTag === "tag" ? `${task.assignedModel}|${task.tag}` : task.assignedModel;
+      let group = groups.get(key);
+      if (!group) {
+        group = { successes: 0, failures: 0, totalLatencyMs: 0, latencies: [] };
+        groups.set(key, group);
+      }
+      if (task.state === "done") {
+        group.successes += 1;
+        const latency = task.latencyMs ?? 0;
+        group.totalLatencyMs += latency;
+        group.latencies.push(latency);
+      } else {
+        group.failures += 1;
+      }
+    }
+  }
+  const stats: Record<string, ModelStat> = {};
+  for (const [key, group] of groups) {
+    const sorted = [...group.latencies].sort((a, b) => a - b);
+    stats[key] = {
+      successes: group.successes,
+      failures: group.failures,
+      totalLatencyMs: group.totalLatencyMs,
+      p50LatencyMs: inMemoryPercentile(sorted, 50),
+      p95LatencyMs: inMemoryPercentile(sorted, 95),
+    };
+  }
+  return stats;
+}
+
 /** In-memory JobsStore — unit tests and any embedder without SQLite. */
 export class InMemoryJobsStore implements JobsStore {
   private jobs = new Map<string, OrchestrateJob>();
@@ -881,38 +939,11 @@ export class InMemoryJobsStore implements JobsStore {
   }
 
   aggregateModelStats(): Record<string, ModelStat> {
-    const stats: Record<string, ModelStat> = {};
-    for (const job of this.jobs.values()) {
-      for (const task of job.tasks) {
-        if (!task.assignedModel) continue;
-        const stat = (stats[task.assignedModel] ??= { successes: 0, failures: 0, totalLatencyMs: 0 });
-        if (task.state === "done") {
-          stat.successes += 1;
-          stat.totalLatencyMs += task.latencyMs ?? 0;
-        } else if (task.state === "failed") {
-          stat.failures += 1;
-        }
-      }
-    }
-    return stats;
+    return inMemoryTaskStats(this.jobs.values(), null);
   }
 
   aggregateModelStatsByCategory(): Record<string, ModelStat> {
-    const stats: Record<string, ModelStat> = {};
-    for (const job of this.jobs.values()) {
-      for (const task of job.tasks) {
-        if (!task.assignedModel) continue;
-        const key = `${task.assignedModel}|${task.tag}`;
-        const stat = (stats[key] ??= { successes: 0, failures: 0, totalLatencyMs: 0 });
-        if (task.state === "done") {
-          stat.successes += 1;
-          stat.totalLatencyMs += task.latencyMs ?? 0;
-        } else if (task.state === "failed") {
-          stat.failures += 1;
-        }
-      }
-    }
-    return stats;
+    return inMemoryTaskStats(this.jobs.values(), "tag");
   }
 
   getModelPenalties(): Record<string, number> {
@@ -945,6 +976,10 @@ export class InMemoryJobsStore implements JobsStore {
   writeTaskTransition(jobId: string, taskId: string, patch: Partial<OrchestrateTask>): OrchestrateTask | null {
     const task = this.task(jobId, taskId);
     if (!task) return null;
+    // B13: stamp terminal transitions — the runtime-stats window anchor.
+    if (patch.state === "done" || patch.state === "failed") {
+      patch = { ...patch, finishedAt: (this as unknown as { nowMs?: () => number }).nowMs?.() ?? Date.now() };
+    }
     Object.assign(task, patch);
     // Leaving "running" always releases the lease.
     if (patch.state !== undefined && patch.state !== "running") task.leaseUntil = null;

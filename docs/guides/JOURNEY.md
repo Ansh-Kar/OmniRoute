@@ -376,3 +376,52 @@ the registry not by confidence).
   The caller sees its honest rank; the orchestrator still breaks near-ties
   toward diversity.
 - swe_bench counts as code capability (humaneval alone was too narrow).
+
+## B13 — Registry intelligence (advisory profiles, provenance, telemetry, versioned refresh)
+
+**User's spec**: routing advice is ADVISORY — before self-executing, Hermes
+sees a task profile (domain, complexity, input, specialist advantage, best
+available top-3, self estimate) and keeps the judgment. The registry holds
+three kinds of information — static facts (embedded), benchmark
+intelligence (refreshed periodically: boot + cron), and runtime performance
+(OUR workload — the most valuable). Missing public benchmarks ≠ unusable:
+provenance `{public: null, internal: 0.87, confidence}` per dimension is
+more honest than pretending equal reliability. Runtime telemetry per
+model × task-type: attempts, successful, success_rate, p50/p95 latency.
+Version the registry so nobody decides on unknowingly stale data, with the
+guidance string stating the stance. Refresh deletes deprecated models.
+Registry is LOCAL at decision time. And swarm need not be sequential:
+independent tasks (vision ∥ code) run parallel, Hermes synthesizes.
+
+**What shipped**: benchmark_provenance + confidenceFromSamples on
+descriptors; unifiedScore internal-empirical fallback (category → composite
+→ internal → neutral); `taskProfile()` advisory block on
+/v1/router/candidates (+ `advisory` + `guidance` + `registry` fields);
+`finishedAt` on OrchestrateTask stamped at terminal transitions (both
+stores; SQLite column, NULL = in-window for pre-B13 rows); 30-day windowed
+stats with nearest-rank p50/p95 (ModelStat + operational p95);
+`RegistryVersion` + `refreshRegistry()` (rebuild prunes deprecated models
+by construction) + `ensureRegistryFresh()` (6h) + boot refresh in
+`registerNodejs`; `POST /v1/router/refresh` (manual/cron); AGENT_TOOL_GUIDE
+swarm-parallel pattern.
+
+**Decisions**:
+- The neutral-benchmark fallback had a latent B12 SCALE BUG: `?? 0.5`
+  feeding a 0–100 raw chain then ÷100 → 0.005, crushing every benchmark-less
+  model. The B13 test for "no public score" exposed it; the neutral is now
+  raw-scale 50. Silent-wrong beats loud-fail only until a test looks.
+- Provenance INTERNAL is the global laplace rate ×100 (rounded), not the
+  category rate — provenance describes the model, the category overlay
+  still handles task-specific evidence.
+- specialist_advantage bands: <0.75×best = high, <0.95×medium, else none;
+  the caller-filtered case is `incapable` (a fact, not advice).
+- A refresh is a REBUILD (resetModelTagIndexCache → derive from live
+  registry): pruning deprecated models comes free from rebuilding rather
+  than diffing — no stale-entry state machine to maintain.
+- `ensureRegistryFresh` runs inside the candidates route (read-path
+  self-heal) rather than a timer — no long-lived scheduler in a serverless
+  runtime, and the read path is exactly where staleness matters.
+
+**Scars**: the b5 suite deep-equals the ModelStat shape — adding optional
+p50/p95 fields means updating its three literal expectations (in-memory ×2,
+SQLite parity ×1); new optional fields are never free under deepEqual.

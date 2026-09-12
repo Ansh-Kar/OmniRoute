@@ -86,6 +86,7 @@ function makeJob(overrides: Partial<OrchestrateJob> = {}): OrchestrateJob {
       leaseUntil: null,
       promptTokens: null,
       completionTokens: null,
+      finishedAt: null,
     })),
     log: [],
     ...overrides,
@@ -129,6 +130,7 @@ function jobFromTasks(
       leaseUntil: null,
       promptTokens: null,
       completionTokens: null,
+      finishedAt: null,
     })),
     log: [],
   };
@@ -521,6 +523,7 @@ test("e2e: stream swarm mode merges the blackboard per completion", async () => 
       leaseUntil: null,
       promptTokens: null,
       completionTokens: null,
+      finishedAt: null,
     })),
     log: [],
   };

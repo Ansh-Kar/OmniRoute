@@ -516,6 +516,55 @@ scoring incl. filtered/unregistered, allocator per-category routing,
 store-level model|tag stats, the flip e2e). Combined batch 194/194; harness
 tsc 0 errors; openapi 710/715 (99.3%).
 
+### 5o. B13 — Registry intelligence: advisory profiles, provenance, telemetry, versioned refresh (`feat(harness)`)
+
+Advisory routing with honest data. The registry collects three kinds of
+information (static facts, refreshed benchmarks, runtime telemetry — the
+most valuable), versions itself so nobody decides on unknowingly stale
+data, and stays LOCAL at routing-decision time.
+
+- **Advisory task profile** — `taskProfile()` on the candidates response:
+  domain / complexity / input, `specialist_advantage`
+  (high|medium|low|none|incapable — ratio of self score to best),`
+  best_available` (top-3 with scores), `self_estimate`
+  (capable|marginal|incapable|unregistered). The router organizes; the
+  judgment stays with Hermes.
+- **Benchmark provenance** — every benchmark dimension carries
+  `{public, internal, confidence}`: public score when it exists (nullable),
+  internal rate from OUR workload (global laplace × 100), confidence from
+  sample size (≥50 high, ≥10 medium, else low). A missing public benchmark
+  NEVER zeroes a model — the unified-score chain falls back
+  category → composite → internal empirical → neutral 50/100.
+  (Fixed a latent B12 scale bug here: the neutral fallback fed a 0–100
+  chain as 0.5 → 0.005 after the ÷100.)
+- **Runtime telemetry** — `finished_at` stamped on terminal transitions
+  (both stores; SQLite `ALTER TABLE … ADD COLUMN finished_at REAL`, NULL =
+  in-window for pre-B13 rows). Stats aggregate over a 30-day window with
+  nearest-rank p50/p95 latency per model (`ModelStat.p50LatencyMs/
+  p95LatencyMs`; `operational.latency_p50_ms` prefers global p50, new
+  `latency_p95_ms`).
+- **Versioned registry + refresh** — `RegistryVersion {version:
+  "YYYY.MM.DD", refreshed_at, runtime_stats_window: "30d"}`;
+  `REGISTRY_STALENESS_GUIDANCE` ("Benchmark data is a snapshot and may be
+  stale. Prefer recent internal performance when available."); refresh at
+  boot (`registerNodejs`), self-heal when > 6h stale
+  (`ensureRegistryFresh` on the candidates route), manual/cron
+  `POST /v1/router/refresh`. A refresh rebuilds from the live provider
+  registry — **deprecated models are deleted**, never lingered.
+- **Clean separation** — Cron/boot collects knowledge → the Registry stores
+  → the Router organizes → Hermes judges. No external dependency at
+  routing-decision time (local/on-device federation safe).
+- **Swarm parallelism documented** — independent tasks (vision ∥ code)
+  share a wave when `depends_on` is omitted; synthesize + own reasoning →
+  final answer. Pattern documented in AGENT_TOOL_GUIDE §7.
+
+Tests: `tests/unit/services/harness-b13.test.ts` (7 — provenance + confidence
+bands, internal-fallback-for-missing-public, profile advantage bands +
+self estimates, p50/p95 nearest-rank, 30d window exclusion incl. NULL
+in-window, terminal stamping, version stamping + fresh no-op). Combined
+batch b1–b13+swarm 201/201; harness tsc 0 errors (24 files); openapi
+711/716 (99.3%).
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

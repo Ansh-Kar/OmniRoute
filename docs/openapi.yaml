@@ -13986,13 +13986,34 @@ paths:
               type: object
       responses:
         "200":
-          description: "task, filter, tiers, candidates, self."
+          description: "advisory, guidance, registry, profile (domain/complexity/input + specialist advantage + best available + self estimate), task, filter, tiers, candidates, self."
           content:
             application/json:
               schema:
                 type: object
         "400":
           description: Invalid body.
+
+  /api/v1/router/refresh:
+    post:
+      summary: "Router: force registry refresh (B13)"
+      description: >-
+        Rebuild the capability registry from the live provider/model registry
+        NOW: new models appear, deprecated models are DELETED (the rebuild
+        contains only what exists now), and the registry version is
+        re-stamped (date-based). The candidates route self-refreshes when
+        stale (> 6h); this is the manual override (cron/worker friendly).
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: "ok, registry (version/refreshed_at/runtime_stats_window), models, providers, note."
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          description: Missing or invalid API key.
 
 components:
   securitySchemes:

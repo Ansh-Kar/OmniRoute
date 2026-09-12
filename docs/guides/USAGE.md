@@ -291,7 +291,7 @@ skill — the whole tool surface + loop discipline) and
 `docs/guides/SETUP_HERMES.md` (user setup: providers → one key → point
 Hermes at the endpoint).
 
-## 12. Layered capability router — `GET/POST /v1/router/candidates` (B12)
+## 12. Layered capability router — `GET/POST /v1/router/candidates` (B12) + advisory profile & versioned registry (B13)
 
 The pipeline, explicitly:
 
@@ -310,13 +310,16 @@ curl -s -X POST "http://localhost:20128/v1/router/candidates" \
        "tool_calling": true, "caller_model": "gpt-4o"}'
 ```
 
-→ `{task: {type, modality}, filter: {pool, eliminated, candidates},
-tiers: {primary, secondary, fallback}, candidates: [{id, provider, tier,
-rank, score, score_breakdown, capabilities, specializations, benchmarks,
-operational, reliability, preferred_for}], self: {rank, score, would_win,
-status}}`.
+→ `{advisory, guidance, registry: {version, refreshed_at,
+runtime_stats_window}, profile: {domain, complexity, input,
+specialist_advantage, best_available, self_estimate}, task: {type,
+modality}, filter: {pool, eliminated, candidates}, tiers: {primary,
+secondary, fallback}, candidates: [{id, provider, tier, rank, score,
+score_breakdown, capabilities, specializations, benchmarks,
+benchmark_provenance, operational, reliability, preferred_for}], self:
+{rank, score, would_win, status}}`.
 
-Three architectural rules:
+Four architectural rules (B13 adds the fourth):
 
 - **Closed loop** — `historical_success` is EMPIRICAL per-(model × category)
   success from the jobs store (`aggregateModelStatsByCategory`, keyed
@@ -338,3 +341,34 @@ Specializations start from benchmark axes (swe_tasks, coding, math,
 hard_reasoning, knowledge, conversation, visual_reasoning) and grow via the
 enrichment table (`buildModelDescriptors` opts: specializations +
 cost_per_million_tokens per model).
+
+**Advisory, not mandatory (B13)** — before self-executing, read the
+`profile` block: `specialist_advantage` (high / medium / low / none /
+incapable), `best_available` (top-3 with scores), `self_estimate`. The
+router organizes candidates; the judgment stays with the caller. Three
+kinds of information feed the score, cleanly separated:
+
+- **Static facts** (embedded/registered): capabilities, context window,
+  modalities, provider — refreshed at boot and on every rebuild.
+- **Benchmark intelligence** (periodic refresh): public scores when they
+  exist; `benchmark_provenance` per dimension marks `{public, internal,
+  confidence}` so a model with no public score is ranked on OUR internal
+  evidence (0–1, confidence from sample size: ≥50 high, ≥10 medium) instead
+  of pretending all silence is equal. A missing benchmark NEVER zeroes a
+  model — the unified-score chain falls back category → composite →
+  internal empirical → neutral.
+- **Runtime telemetry** (most valuable): per model × task-type — attempts,
+  successful, success_rate, p50/p95 latency over a 30-day window
+  (`finished_at` stamps on terminal transitions; NULL counts as in-window
+  for pre-B13 rows).
+
+**Versioned registry (B13)** — every response carries `registry:
+{version: "YYYY.MM.DD", refreshed_at, runtime_stats_window: "30d"}` plus the
+staleness `guidance`: benchmark data is a snapshot and may be stale —
+prefer recent internal performance when available. The registry refreshes
+on boot, self-heals when older than 6h (`ensureRegistryFresh` on the
+candidates route), and `POST /v1/router/refresh` forces a rebuild now —
+cron/worker friendly. A rebuild is a full re-derivation from the live
+provider registry, so **deprecated models are deleted, never lingered**.
+The registry is LOCAL at routing-decision time — no external calls mid-
+decision, which matters for local/on-device federation.

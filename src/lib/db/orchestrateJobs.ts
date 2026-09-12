@@ -115,6 +115,12 @@ export function ensureOrchestrateTables(): void {
       // Column already present.
     }
   }
+  // B13: terminal-transition timestamp — the runtime-stats window anchor.
+  try {
+    db.exec(`ALTER TABLE orchestrate_tasks ADD COLUMN finished_at REAL`);
+  } catch {
+    // Column already present.
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS orchestrate_model_drift (
       model TEXT PRIMARY KEY,
@@ -145,6 +151,7 @@ function mapTask(row: any): OrchestrateTask {
     leaseUntil: row.lease_until ?? null,
     promptTokens: row.prompt_tokens ?? null,
     completionTokens: row.completion_tokens ?? null,
+    finishedAt: row.finished_at ?? null,
   };
 }
 
@@ -166,6 +173,74 @@ function jobFromRow(row: any, tasks: OrchestrateTask[], log: OrchestrateLogEntry
     tasks,
     log,
   };
+}
+
+
+/**
+ * B13: terminal task rows for stats — within the runtime window when the
+ * caller provides one. Rows persisted pre-B13 (finished_at NULL) count as
+ * in-window (an empty-window upgrade would zero all evidence).
+ */
+const RUNTIME_STATS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000; // 30d
+
+function allTerminalTaskRows(): Array<{ model: string; tag: string; state: string; latency: number | null }> {
+  ensureOrchestrateTables();
+  const db = getDbInstance();
+  const cutoff = Date.now() - RUNTIME_STATS_WINDOW_MS;
+  return (
+    db
+      .prepare(
+        `SELECT assigned_model AS model, tag AS tag, state AS state, latency_ms AS latency
+         FROM orchestrate_tasks
+         WHERE assigned_model IS NOT NULL AND assigned_model != ''
+           AND state IN ('done', 'failed')
+           AND (finished_at IS NULL OR finished_at >= ?)`
+      )
+      .all(cutoff) as Array<{ model: string; tag: string; state: string; latency: number | null }>
+  );
+}
+
+/** p50/p95 over observed done-task latencies (nearest-rank). */
+function percentile(sorted: number[], p: number): number | null {
+  if (sorted.length === 0) return null;
+  const rank = Math.min(sorted.length, Math.max(1, Math.ceil((p / 100) * sorted.length)));
+  return sorted[rank - 1];
+}
+
+/** Aggregate terminal rows into ModelStat (+ p50/p95), grouped as asked. */
+function windowedTaskStats(
+  rows: Array<{ model: string; tag: string; state: string; latency: number | null }>,
+  byTag: string | null
+): Record<string, ModelStat> {
+  const groups = new Map<string, { successes: number; failures: number; totalLatencyMs: number; latencies: number[] }>();
+  for (const row of rows) {
+    const key = byTag === "tag" ? `${row.model}|${row.tag}` : row.model;
+    let group = groups.get(key);
+    if (!group) {
+      group = { successes: 0, failures: 0, totalLatencyMs: 0, latencies: [] };
+      groups.set(key, group);
+    }
+    if (row.state === "done") {
+      group.successes += 1;
+      const latency = row.latency ?? 0;
+      group.totalLatencyMs += latency;
+      group.latencies.push(latency);
+    } else if (row.state === "failed") {
+      group.failures += 1;
+    }
+  }
+  const stats: Record<string, ModelStat> = {};
+  for (const [key, group] of groups) {
+    const sorted = [...group.latencies].sort((a, b) => a - b);
+    stats[key] = {
+      successes: group.successes,
+      failures: group.failures,
+      totalLatencyMs: group.totalLatencyMs,
+      p50LatencyMs: percentile(sorted, 50),
+      p95LatencyMs: percentile(sorted, 95),
+    };
+  }
+  return stats;
 }
 
 export class SqliteJobsStore {
@@ -299,55 +374,12 @@ export class SqliteJobsStore {
   }
 
   aggregateModelStats(): Record<string, ModelStat> {
-    ensureOrchestrateTables();
-    const db = getDbInstance();
-    const rows = db
-      .prepare(
-        `SELECT assigned_model AS model,
-                SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS successes,
-                SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS failures,
-                SUM(CASE WHEN state = 'done' THEN COALESCE(latency_ms, 0) ELSE 0 END) AS totalLatencyMs
-         FROM orchestrate_tasks
-         WHERE assigned_model IS NOT NULL AND assigned_model != ''
-         GROUP BY assigned_model`
-      )
-      .all() as Array<{ model: string; successes: number; failures: number; totalLatencyMs: number }>;
-    const stats: Record<string, ModelStat> = {};
-    for (const row of rows) {
-      stats[row.model] = {
-        successes: Number(row.successes) || 0,
-        failures: Number(row.failures) || 0,
-        totalLatencyMs: Number(row.totalLatencyMs) || 0,
-      };
-    }
-    return stats;
+    return windowedTaskStats(allTerminalTaskRows(), null);
   }
 
   /** B12 closed loop: per-(model × category) aggregates, keyed `model|tag`. */
   aggregateModelStatsByCategory(): Record<string, ModelStat> {
-    ensureOrchestrateTables();
-    const db = getDbInstance();
-    const rows = db
-      .prepare(
-        `SELECT assigned_model AS model,
-                tag AS tag,
-                SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS successes,
-                SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS failures,
-                SUM(CASE WHEN state = 'done' THEN COALESCE(latency_ms, 0) ELSE 0 END) AS totalLatencyMs
-         FROM orchestrate_tasks
-         WHERE assigned_model IS NOT NULL AND assigned_model != ''
-         GROUP BY assigned_model, tag`
-      )
-      .all() as Array<{ model: string; tag: string; successes: number; failures: number; totalLatencyMs: number }>;
-    const stats: Record<string, ModelStat> = {};
-    for (const row of rows) {
-      stats[`${row.model}|${row.tag}`] = {
-        successes: Number(row.successes) || 0,
-        failures: Number(row.failures) || 0,
-        totalLatencyMs: Number(row.totalLatencyMs) || 0,
-      };
-    }
-    return stats;
+    return windowedTaskStats(allTerminalTaskRows(), "tag");
   }
 
   getModelPenalties(): Record<string, number> {
@@ -418,6 +450,11 @@ export class SqliteJobsStore {
     // Leaving "running" always releases the lease (B5).
     if (patch.state !== undefined && patch.state !== "running") {
       fields.push(`lease_until = NULL`);
+    }
+    // B13: stamp terminal transitions — the runtime-stats window anchor.
+    if (patch.state === "done" || patch.state === "failed") {
+      fields.push(`finished_at = ?`);
+      values.push(Date.now());
     }
     if (fields.length > 0) {
       db.prepare(

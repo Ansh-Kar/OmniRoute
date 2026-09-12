@@ -41,8 +41,13 @@
  * Pure module: no DB, no clock, no globals — every input is a parameter.
  */
 
-import type { ModelTagEntry, ModelTagIndex } from "../modelTags/index.ts";
+import { resetModelTagIndexCache, type ModelTagEntry, type ModelTagIndex } from "../modelTags/index.ts";
 import type { ModelStat } from "./allocator.ts";
+
+/** The liveIndex cache reset — deprecated models leave with the rebuild. */
+function resetTagIndexCache(): void {
+  resetModelTagIndexCache();
+}
 
 // ── Descriptor schema ───────────────────────────────────────────────────────
 
@@ -61,10 +66,36 @@ export type ModelSpecialization = { name: string; score: number }; // 0..1
 
 export type ModelOperational = {
   context_window: number | null;
-  /** Empirical average latency (ms) over observed tasks; null = unobserved. */
+  /** Empirical p50 latency (ms) over done tasks in the 30d window; null = unobserved. */
   latency_p50_ms: number | null;
+  /** B13: empirical p95 latency (ms) — the tail the orchestrator's timeouts feel. */
+  latency_p95_ms: number | null;
   /** Enrichment-sourced list price ($/M tokens); null = unknown (no penalty). */
   cost_per_million_tokens: number | null;
+};
+
+/**
+ * B13 benchmark provenance: public numbers are snapshots and may be stale or
+ * MISSING — a null public score never makes a model unusable; internal
+ * (our-workload) evidence ranks ahead when present.
+ */
+export type BenchmarkProvenance = {
+  /** Public leaderboard/seed score (0..100) or null when unknown. */
+  public: number | null;
+  /** Internal empirical score (0..100, from observed success) or null. */
+  internal: number | null;
+  /** Evidence strength behind `internal` — low until the workload speaks. */
+  confidence: "high" | "medium" | "low";
+};
+
+/** B13: registry versioning — Hermes never decides on unknowingly stale data. */
+export type RegistryVersion = {
+  /** Date-stamped registry build (YYYY.MM.DD). */
+  version: string;
+  /** Epoch ms of the last refresh (cache reset + live-registry rebuild). */
+  refreshed_at: number;
+  /** The runtime evidence window the reliability/latency numbers cover. */
+  runtime_stats_window: "30d";
 };
 
 export type ModelReliability = {
@@ -82,6 +113,8 @@ export type ModelDescriptor = {
   specializations: ModelSpecialization[];
   /** Normalized 0..100 per named benchmark (axes + category composites). */
   benchmarks: Record<string, number>;
+  /** B13: per-dimension provenance — public (nullable!) vs internal + confidence. */
+  benchmark_provenance: Record<string, BenchmarkProvenance>;
   operational: ModelOperational;
   reliability: ModelReliability;
   /** Routing hints: the specializations this model is preferred for. */
@@ -173,6 +206,13 @@ function avgLatency(stat: ModelStat | undefined): number | null {
 /** Descriptor + the internal per-category empirical rates (not serialized). */
 export type DescriptorWithRates = ModelDescriptor & { categoryRates: Map<string, number> };
 
+/** B13: confidence from sample size — the workload must speak before "high". */
+function confidenceFromSamples(samples: number): "high" | "medium" | "low" {
+  if (samples >= 50) return "high";
+  if (samples >= 10) return "medium";
+  return "low";
+}
+
 /** Build the full descriptor set from the tag index + empirical stats. */
 export function buildModelDescriptors(inputs: RegistryInputs): DescriptorWithRates[] {
   const { entries, stats, statsByCategory, enrichment } = inputs;
@@ -193,6 +233,7 @@ export function buildModelDescriptors(inputs: RegistryInputs): DescriptorWithRat
     }
     const rich = enrichment?.[entry.model];
     const specializations = deriveSpecializations(entry);
+    const benchmarks = deriveBenchmarks(entry);
     if (rich?.specializations) {
       for (const [name, score] of Object.entries(rich.specializations)) {
         const existing = specializations.find((spec) => spec.name === name);
@@ -202,15 +243,23 @@ export function buildModelDescriptors(inputs: RegistryInputs): DescriptorWithRat
       specializations.sort((a, b) => b.score - a.score);
     }
     const successRate = laplaceSuccess(global);
+    const internal = successRate !== null ? Math.round(successRate * 100) : null;
+    const confidence = confidenceFromSamples(global ? global.successes + global.failures : 0);
+    const benchmarkProvenance: Record<string, BenchmarkProvenance> = {};
+    for (const [name, score] of Object.entries(benchmarks)) {
+      benchmarkProvenance[name] = { public: score, internal, confidence };
+    }
     return {
       id: entry.id,
       provider: entry.provider,
       capabilities: deriveCapabilities(entry),
       specializations,
-      benchmarks: deriveBenchmarks(entry),
+      benchmarks,
+      benchmark_provenance: benchmarkProvenance,
       operational: {
         context_window: entry.contextLength ?? null,
-        latency_p50_ms: avgLatency(global),
+        latency_p50_ms: global?.p50LatencyMs ?? avgLatency(global),
+        latency_p95_ms: global?.p95LatencyMs ?? null,
         cost_per_million_tokens: rich?.cost_per_million_tokens ?? null,
       },
       operationalByCategory: undefined,
@@ -318,6 +367,13 @@ export type RankedCandidate = {
  * empirical multipliers) — absence of evidence never zeroes a candidate,
  * and never promotes one either.
  */
+/** Internal empirical rate as a benchmark-equivalent 0..100 score. */
+function internalAsBenchmark(categoryRates: Map<string, number>, category: string | undefined): number | null {
+  if (category === undefined) return null;
+  const rate = categoryRates.get(category);
+  return rate !== undefined ? rate * 100 : null;
+}
+
 export function unifiedScore(
   descriptor: ModelDescriptor & { categoryRates?: Map<string, number> },
   context: RankContext
@@ -329,11 +385,14 @@ export function unifiedScore(
       ? descriptor.specializations.find((candidate) => candidate.name === context.specialization)?.score
       : undefined;
   const capabilityMatch = spec ?? 1;
-  // benchmark: category overlay → axis/composite → neutral 0.5.
+  // benchmark: category overlay → axis/composite → INTERNAL empirical →
+  // neutral 0.5. B13 rule: a missing public benchmark NEVER makes a model
+  // unusable — our own workload evidence substitutes for the snapshot.
   const benchmarkRaw =
     (context.category !== undefined ? descriptor.benchmarks[context.category] : undefined) ??
     descriptor.benchmarks.composite ??
-    0.5;
+    internalAsBenchmark(categoryRates, context.category) ??
+    50;
   const benchmark = Math.max(0, Math.min(1, benchmarkRaw / 100));
   // historical_success: empirical P(success | model, category), smoothed;
   // (0.5 + 0.5 × rate) so unobserved is neutral 0.75, matching the B5
@@ -389,6 +448,121 @@ export function rankCandidates(
   });
 }
 
+// ── Task profile (advisory routing — B13) ───────────────────────────────────
+
+export type TaskProfile = {
+  domain: string | null;
+  complexity: "fast" | "deep" | null;
+  input: string | null;
+  /**
+   * How much a specialist would beat the caller: HIGH (external clearly
+   * ahead), MEDIUM (near-tie), NONE (caller competitive/absent), plus
+   * "incapable" when the caller can't serve the task at all.
+   */
+  specialist_advantage: "high" | "medium" | "none" | "incapable";
+  best_available: Array<{ id: string; score: number }>;
+  self_estimate: "capable" | "marginal" | "incapable" | "unregistered";
+};
+
+/**
+ * The advisory block Hermes sees BEFORE deciding to self-execute:
+ *
+ *   TASK PROFILE — Domain: OCR · Complexity: medium · Input: image
+ *   Specialist advantage: HIGH
+ *   BEST AVAILABLE: Qwen-VL → 96 · Model B → 94 · Model C → 92
+ *   SELF ESTIMATE: Hermes → capable
+ *
+ * Advisory, not mandatory: the router organizes candidates and states the
+ * advantage honestly; the judgment stays with Hermes.
+ */
+export function taskProfile(
+  ranked: RankedCandidate[],
+  context: { domain?: string | null; complexity?: "fast" | "deep" | null; input?: string | null },
+  self: SelfAssessment | null
+): TaskProfile {
+  const best = ranked[0]?.score ?? 0;
+  const selfScore = self?.score ?? null;
+  let advantage: TaskProfile["specialist_advantage"] = "none";
+  if (!self || self.status === "filtered" || self.status === "unregistered") {
+    advantage = self === null ? "none" : "incapable";
+  } else if (selfScore !== null && best > 0) {
+    const ratio = selfScore / best;
+    advantage = ratio < 0.75 ? "high" : ratio < 0.95 ? "medium" : "none";
+  }
+  const selfEstimate: TaskProfile["self_estimate"] =
+    self === null
+      ? "capable" // no caller named — nothing to estimate
+      : self.status === "ranked"
+        ? self.would_win || (selfScore !== null && (selfScore ?? 0) >= 0.85 * best)
+          ? "capable"
+          : "marginal"
+        : self.status === "filtered"
+          ? "incapable"
+          : "unregistered";
+  return {
+    domain: context.domain ?? null,
+    complexity: context.complexity ?? null,
+    input: context.input ?? null,
+    specialist_advantage: advantage,
+    best_available: ranked.slice(0, 3).map((candidate) => ({ id: candidate.descriptor.id, score: Number((candidate.descriptor.benchmarks.composite ?? candidate.score * 100).toFixed(0)) })),
+    self_estimate: selfEstimate,
+  };
+}
+
+// ── Registry versioning + refresh (B13) ─────────────────────────────────────
+
+/**
+ * The staleness note every candidates response carries — Hermes decides
+ * knowing benchmarks are snapshots:
+ * "Benchmark data is a snapshot and may be stale. Prefer recent internal
+ *  performance when available."
+ */
+export const REGISTRY_STALENESS_GUIDANCE =
+  "Benchmark data is a snapshot and may be stale. Prefer recent internal performance when available.";
+
+let registryRefreshedAt = 0;
+let registryVersion = "0.0.0";
+
+/** Minimum interval between automatic refreshes (6h). */
+const REGISTRY_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+function dateVersion(now: number): string {
+  const d = new Date(now);
+  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Refresh the registry: reset the tag-index cache and rebuild from the LIVE
+ * provider/model registry — models the providers deprecated drop out by
+ * construction (the rebuild only contains what exists now; stale entries are
+ * deleted, never lingered on). Stamps the registry version.
+ */
+export function refreshRegistry(now: number = Date.now()): RegistryVersion {
+  // Late import avoids a cycle: liveIndex resets and rebuilds from the
+  // provider registry (this module stays import-pure for tests).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  resetTagIndexCache();
+  registryRefreshedAt = now;
+  registryVersion = dateVersion(now);
+  return { version: registryVersion, refreshed_at: now, runtime_stats_window: "30d" };
+}
+
+/** Lazily refresh when stale (> 6h) — the route calls this per request. */
+export function ensureRegistryFresh(now: number = Date.now()): RegistryVersion {
+  if (now - registryRefreshedAt > REGISTRY_REFRESH_INTERVAL_MS) {
+    return refreshRegistry(now);
+  }
+  return registryVersionInfo();
+}
+
+export function registryVersionInfo(): RegistryVersion {
+  return {
+    version: registryVersion || dateVersion(registryRefreshedAt || Date.now()),
+    refreshed_at: registryRefreshedAt,
+    runtime_stats_window: "30d",
+  };
+}
+
 // ── Equal-scoring self-assessment ───────────────────────────────────────────
 
 export type SelfAssessment = {
@@ -433,6 +607,7 @@ export function rankedToApi(candidate: RankedCandidate): Record<string, unknown>
     capabilities: candidate.descriptor.capabilities,
     specializations: candidate.descriptor.specializations,
     benchmarks: candidate.descriptor.benchmarks,
+    benchmark_provenance: candidate.descriptor.benchmark_provenance,
     operational: candidate.descriptor.operational,
     reliability: candidate.descriptor.reliability,
     preferred_for: candidate.descriptor.preferred_for,

@@ -92,6 +92,7 @@ function jobFromTaskSpecs(
           leaseUntil: null,
           promptTokens: null,
           completionTokens: null,
+      finishedAt: null,
         }) as OrchestrateTask
     ),
     log: [],

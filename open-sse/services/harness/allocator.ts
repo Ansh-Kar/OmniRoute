@@ -32,6 +32,13 @@ export type ModelStat = {
   failures: number;
   /** Sum of recorded latencies (ms) over successful tasks. */
   totalLatencyMs: number;
+  /**
+   * B13 runtime telemetry: nearest-rank p50/p95 over done-task latencies in
+   * the 30d window. Optional — single-arg statOf callers and older stores
+   * omit them; the allocator itself keeps using totalLatencyMs/successes.
+   */
+  p50LatencyMs?: number | null;
+  p95LatencyMs?: number | null;
 };
 
 /**

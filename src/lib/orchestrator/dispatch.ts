@@ -80,6 +80,7 @@ export function jobFromPlan(
       leaseUntil: null,
       promptTokens: null,
       completionTokens: null,
+      finishedAt: null,
     })),
     log: inferredLogs,
   };

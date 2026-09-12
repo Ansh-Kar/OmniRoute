@@ -5,10 +5,14 @@ import { getModelTagIndex } from "@omniroute/open-sse/services/modelTags/index.t
 import { classifyRequestBody } from "@omniroute/open-sse/services/harness/classifier.ts";
 import {
   buildModelDescriptors,
+  ensureRegistryFresh,
   filterCandidates,
   rankCandidates,
   rankedToApi,
+  REGISTRY_STALENESS_GUIDANCE,
+  registryVersionInfo,
   selfAssess,
+  taskProfile,
   type CandidateFilter,
 } from "@omniroute/open-sse/services/harness/capabilityRegistry.ts";
 
@@ -54,9 +58,11 @@ async function handle(request: NextRequest, body: Record<string, unknown> | null
   // Prompt → classify (task type + implied modality); explicit params win.
   let taskType: string | undefined;
   let taskModality: string | undefined;
+  let complexity: "fast" | "deep" | null = null;
   if (typeof params.prompt === "string" && params.prompt.trim()) {
     const classification = classifyRequestBody({ messages: [{ role: "user", content: params.prompt }] });
     taskType = classification.type;
+    complexity = classification.complexity;
     if (classification.modalities.includes("vision")) taskModality = "image";
   }
   const requestedModality = typeof params.modality === "string" ? params.modality : undefined;
@@ -81,6 +87,11 @@ async function handle(request: NextRequest, body: Record<string, unknown> | null
   if (filter.tool_calling !== undefined) activeFilter.tool_calling = filter.tool_calling;
   if (filter.min_context !== undefined) activeFilter.min_context = filter.min_context;
 
+  // B13: refresh-on-stale (> 6h since the last rebuild — deprecated models
+  // drop out with the rebuild) and stamp the response so Hermes never
+  // decides on unknowingly stale data.
+  ensureRegistryFresh();
+
   const index = getModelTagIndex();
   const descriptors = buildModelDescriptors({
     entries: index.entries,
@@ -93,11 +104,21 @@ async function handle(request: NextRequest, body: Record<string, unknown> | null
     { specialization, category: category ?? undefined },
     top
   );
-  const self = callerModel ? selfAssess(callerModel, ranked, descriptors.filter((d) => !candidates.includes(d))) : null;
+  const eliminatedDescriptors = descriptors.filter((d) => !candidates.includes(d));
+  const self = callerModel ? selfAssess(callerModel, ranked, eliminatedDescriptors) : null;
+  const profile = taskProfile(
+    ranked,
+    { domain: specialization ?? category ?? taskType ?? null, complexity, input: (requestedModality ?? taskModality) ?? (taskType === "image_gen" ? "image" : null) },
+    self
+  );
 
   return NextResponse.json(
     {
       ok: true,
+      advisory: "routing suggestions are advisory — the judgment stays with you",
+      guidance: REGISTRY_STALENESS_GUIDANCE,
+      registry: registryVersionInfo(),
+      profile,
       task: { type: taskType ?? null, modality: (requestedModality ?? taskModality) ?? null, specialization: specialization ?? null, category: category ?? null },
       filter: { ...activeFilter, pool: descriptors.length, eliminated, candidates: candidates.length },
       tiers: {

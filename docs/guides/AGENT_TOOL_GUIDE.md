@@ -38,7 +38,8 @@ hidden, never forced onto a worse model.
 | `POST /v1/orchestrate/spawn` | Delegate a self-contained task to a helper job. |
 | `GET /v1/orchestrate/wait?job_ids=a,b&timeout=30` | Wake when ANY of several jobs completes. |
 | `POST /v1/harness/classify` | Ask what the gateway would route a prompt as (debugging). |
-| `GET/POST /v1/router/candidates` | **Self-assessment.** Who can serve this task — including YOU, ranked by the identical score. |
+| `GET/POST /v1/router/candidates` | **Self-assessment.** Who can serve this task — including YOU, ranked by the identical score — plus the advisory task `profile` (specialist advantage, best available, self estimate), `registry` version, and staleness `guidance`. |
+| `POST /v1/router/refresh` | Force a registry refresh now (new models in, deprecated models deleted, version re-stamped). Cron/worker friendly. |
 | `GET /v1/models/best?task=code&limit=6` | See the ranked candidates for a category (never required). |
 
 ## 2. Submit an objective
@@ -163,6 +164,49 @@ model whose `ui_understanding` is high even when it's SECONDARY.
 The routing engine knows whether a model is "better than you" — you don't
 have to. Use it.
 
+### The task profile (advisory, not mandatory)
+
+Since B13 the candidates response carries a `profile` block — read it before
+self-executing:
+
+- **domain / complexity / input** — what the router understood the task to be.
+- **specialist_advantage** — `high` (a specialist beats you badly), `medium`
+  (meaningfully better), `low` (roughly equal), `none` (you're competitive),
+  `incapable` (you were filtered — you cannot serve this task at all).
+- **best_available** — the top-3 candidates with their unified scores.
+- **self_estimate** — `capable` / `marginal` / `incapable` / `unregistered`.
+
+This is **advice, not an order**. The router organizes candidates; the
+judgment stays with you. A `high` specialist advantage on a two-line image
+caption might still not be worth a delegation round-trip — that's your call.
+An `incapable` estimate is not advice though: you were filtered out.
+
+Treat the data honestly: `benchmark_provenance` per dimension tells you
+whether a score is `{public, internal, confidence}` — a model with
+`public: null, internal: 0.87, confidence: high` is ranked on OUR workload
+history, not a public leaderboard. Confidence `low` means thin evidence.
+And the `guidance` string says it plainly: benchmark data is a snapshot and
+may be stale — prefer recent internal performance when available. The
+`registry` block (version date, refreshed_at, `runtime_stats_window: 30d`)
+tells you how fresh the snapshot is; the registry also self-refreshes when
+stale (> 6h) and on server boot, and `POST /v1/router/refresh` forces it now.
+
+### Swarm need not be sequential
+
+Independent tasks run in PARALLEL — omit `depends_on` and they share a wave:
+
+```
+POST /v1/orchestrate/objectives  { goal: "compare screenshot vs its React code" }
+POST /…/jobs/{id}/tasks  { id: "vision", tag: "vision", prompt: "describe the screenshot…" }
+POST /…/jobs/{id}/tasks  { id: "code",   tag: "code",   prompt: "analyze the component…" }   // no depends_on → parallel
+GET  /v1/orchestrate/wait?job_ids={id}
+→ synthesize both results + your own reasoning → final answer
+```
+
+Vision and code analysis don't depend on each other — run them concurrently,
+wait once, then synthesize. Sequential chains are only for genuine data
+dependencies (`depends_on`).
+
 ## 8. Anti-patterns
 
 - **Naming a model.** Never. If you find yourself wanting a specific model,
@@ -174,3 +218,7 @@ have to. Use it.
 - **Spawning from a helper.** Refused by design — do the work or wait.
 - **Resubmitting failed tasks.** The runner already retries to
   `max_attempts`; resubmission duplicates work. Append NEW tasks instead.
+- **Running independent tasks sequentially.** No `depends_on` → same wave →
+  parallel. Only chain when one task's input is another's output.
+- **Treating the profile as an order.** It's advisory. `incapable` is a fact;
+  `high` advantage is a judgment input.

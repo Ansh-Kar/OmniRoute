@@ -335,6 +335,7 @@ test("e2e: the store's per-category stats change a real allocation (P(success|mo
             leaseUntil: null,
             promptTokens: null,
             completionTokens: null,
+      finishedAt: null,
           }) as OrchestrateTask
       ),
       log: [],
@@ -381,6 +382,7 @@ test("e2e: the store's per-category stats change a real allocation (P(success|mo
       leaseUntil: null,
       promptTokens: null,
       completionTokens: null,
+      finishedAt: null,
     });
     history.tasks.push({
       ...({} as OrchestrateTask),
@@ -401,6 +403,7 @@ test("e2e: the store's per-category stats change a real allocation (P(success|mo
       leaseUntil: null,
       promptTokens: null,
       completionTokens: null,
+      finishedAt: null,
     });
   }
   storeB.createJob(history, null);
