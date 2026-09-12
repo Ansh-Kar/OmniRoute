@@ -46,6 +46,11 @@
     "src/app/api/v1/router/candidates/route.ts",
     "tests/unit/services/harness-b12.test.ts",
     "src/app/api/v1/router/refresh/route.ts",
-    "tests/unit/services/harness-b13.test.ts"
+    "tests/unit/services/harness-b13.test.ts",
+    "open-sse/services/harness/embeddingClassifier.ts",
+    "src/lib/harness/selfFetch.ts",
+    "src/lib/harness/embedder.ts",
+    "src/app/api/v1/harness/classify/route.ts",
+    "tests/unit/services/harness-b14.test.ts"
   ]
 }

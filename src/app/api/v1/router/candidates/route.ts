@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { SqliteJobsStore } from "@/lib/db/orchestrateJobs";
 import { getModelTagIndex } from "@omniroute/open-sse/services/modelTags/index.ts";
-import { classifyRequestBody } from "@omniroute/open-sse/services/harness/classifier.ts";
+import { classifyRequest } from "@omniroute/open-sse/services/harness/classifier.ts";
+import { makeSelfFetchEmbedder } from "@/lib/harness/embedder";
 import {
   buildModelDescriptors,
   ensureRegistryFresh,
@@ -60,7 +61,23 @@ async function handle(request: NextRequest, body: Record<string, unknown> | null
   let taskModality: string | undefined;
   let complexity: "fast" | "deep" | null = null;
   if (typeof params.prompt === "string" && params.prompt.trim()) {
-    const classification = classifyRequestBody({ messages: [{ role: "user", content: params.prompt }] });
+    // B14: the same classifier ladder as /v1/harness/classify — stage 1
+    // heuristics, then (low-confidence only) one embeddings call against
+    // exemplar centroids via the provider /v1/embeddings surface. No model
+    // stage here: the router path stays non-generative. Opt out with
+    // use_embeddings=false; pin a model with embedding_model.
+    const classification = await classifyRequest(
+      { messages: [{ role: "user", content: params.prompt }] },
+      {
+        embed:
+          params.use_embeddings === false
+            ? undefined
+            : makeSelfFetchEmbedder({
+                incoming: request,
+                model: typeof params.embedding_model === "string" && params.embedding_model.trim() ? params.embedding_model.trim() : undefined,
+              }),
+      }
+    );
     taskType = classification.type;
     complexity = classification.complexity;
     if (classification.modalities.includes("vision")) taskModality = "image";

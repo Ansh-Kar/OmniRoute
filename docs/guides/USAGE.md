@@ -291,7 +291,34 @@ skill — the whole tool surface + loop discipline) and
 `docs/guides/SETUP_HERMES.md` (user setup: providers → one key → point
 Hermes at the endpoint).
 
-## 12. Layered capability router — `GET/POST /v1/router/candidates` (B12) + advisory profile & versioned registry (B13)
+## 12. Embedding-classified routing — the classifier's stage 1.5 (B14)
+
+When the free keyword heuristics are UNSURE (low confidence — the vague
+"hey so about that thing" case), the classifier refines cheapest-first:
+
+```
+stage 1   heuristics   free, ~0ms, always runs (body shape is authoritative)
+stage 1.5 embeddings   one provider /v1/embeddings call (B14, default ON)
+                       — the text is matched against per-task-type EXEMPLAR
+                       CENTROIDS (7 types × 7 exemplars); a verdict needs
+                       BOTH similarity ≥ 0.3 AND margin ≥ 0.03 over the
+                       runner-up, else the heuristic default stands
+stage 2   model        opt-in (useModel), one cheap generative call
+```
+
+Every stage degrades downward, never errors. Costs stay tiny: centroids
+are cached per embedding model (6h), request-text vectors get an LRU
+(repeated classifications cost zero calls), and the whole stage is bounded
+at 2500ms. No model naming required — the first configured embedding model
+is used (pin with `embeddingModel` / `embedding_model`; opt out with
+`useEmbeddings: false` / `use_embeddings=false`).
+
+Surfaces: `POST /v1/harness/classify` (result `stage: "embeddings"` tells
+you which stage answered) and `GET/POST /v1/router/candidates` (the
+`task.type` behind the advisory profile may now come from embeddings).
+`/quick` and `/plan` intentionally stay stage-1-only — latency paths.
+
+## 13. Layered capability router — `GET/POST /v1/router/candidates` (B12) + advisory profile & versioned registry (B13)
 
 The pipeline, explicitly:
 

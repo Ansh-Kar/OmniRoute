@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import { classifyRequest } from "@omniroute/open-sse/services/harness/classifier.ts";
 import { selfFetchChat } from "@/lib/harness/selfFetch";
+import { makeSelfFetchEmbedder } from "@/lib/harness/embedder";
 
 /**
  * POST /api/v1/harness/classify — the task classifier, standalone (Layer 3,
@@ -10,12 +11,22 @@ import { selfFetchChat } from "@/lib/harness/selfFetch";
  * detected modalities, and the capability alias the harness would route it
  * to — WITHOUT executing anything.
  *
- * Stage 1 (free heuristics) always runs. With `{ "useModel": true }` the
- * classifier may spend one cheap model call to refine a low-confidence
- * verdict (stage 2); parse failures degrade to stage 1, never to an error.
+ * Stage 1 (free heuristics) always runs. When the verdict is
+ * low-confidence, the refinement ladder runs cheapest-first:
+ *
+ *   - Stage 1.5 (B14, default ON): one /v1/embeddings call (via the full
+ *     native pipeline) — the text is matched against per-type exemplar
+ *     centroids. Disable with { "useEmbeddings": false }; pin a model with
+ *     { "embeddingModel": "provider/model" } (the catalog default is used
+ *     otherwise — no model naming required).
+ *   - Stage 2 (opt-in): with { "useModel": true } a cheap classifier model
+ *     re-reads the request.
+ *
+ * Every stage failure degrades downward, never to an error.
  *
  * Body: a chat-shaped request (messages/prompt/input — the same shape
- * /v1/chat/completions accepts) plus optional { useModel?, classifierModel? }.
+ * /v1/chat/completions accepts) plus optional { useEmbeddings?,
+ * embeddingModel?, useModel?, classifierModel? }.
  */
 export async function OPTIONS() {
   return new Response(null, {
@@ -57,6 +68,16 @@ export async function POST(request: Request) {
   }
 
   const classification = await classifyRequest(body, {
+    embed:
+      body.useEmbeddings === false
+        ? undefined
+        : makeSelfFetchEmbedder({
+            incoming: request,
+            model:
+              typeof body.embeddingModel === "string" && body.embeddingModel.trim()
+                ? body.embeddingModel.trim()
+                : undefined,
+          }),
     dispatch:
       body.useModel === true
         ? (chatBody, model) => selfFetchChat({ incoming: request, body: { ...chatBody, model } })

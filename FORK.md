@@ -565,6 +565,51 @@ in-window, terminal stamping, version stamping + fresh no-op). Combined
 batch b1–b13+swarm 201/201; harness tsc 0 errors (24 files); openapi
 711/716 (99.3%).
 
+### 5p. B14 — Embeddings-based classification at the classifier seam (`feat(harness)`)
+
+The deferred embedding-source decision, made: **provider /v1/embeddings**.
+The classifier's cheapest-first ladder gains a middle stage — one cheap,
+non-generative, cache-friendly embeddings call between the free heuristics
+and the opt-in model call.
+
+- **`open-sse/services/harness/embeddingClassifier.ts`** (pure): 7 task
+  types × 7 exemplar prompts (media/body-shape types excluded by design —
+  stage 1's body-shape rules are authoritative), cosine matching against
+  per-type exemplar CENTROIDS with margin discipline (needs BOTH absolute
+  similarity ≥ 0.3 and margin ≥ 0.03 over the runner-up; ≥ 0.08 = high
+  confidence — an ambiguous verdict keeps the heuristic default, which is
+  more honest than a coin flip). Per-MODEL centroid cache (6h TTL — a
+  model switch rebuilds; the model identity is only known after the first
+  embed, so a model race between text and centroid embeds is guarded),
+  in-flight build dedupe, and a 256-entry LRU for request-text vectors
+  (repeated classifications cost zero calls).
+- **`classifier.ts`**: `classifyRequest` gains stage 1.5 — runs only when
+  stage 1 is low-confidence AND an `embed` function is supplied AND the
+  request carries no image/audio content (body facts are never re-decided
+  by text semantics). Stage "embeddings" in the classification result;
+  every failure degrades downward, never errors (same contract as stage 2).
+- **`src/lib/harness/embedder.ts`** + `selfFetchEmbeddings`/`selfFetchList`:
+  the route-side embedding source — OmniRoute's OWN /v1/embeddings via
+  self-fetch (the call rides the FULL native pipeline: provider selection,
+  failover, credentials). Default model resolution honors the total
+  abstraction: no naming required — the first configured embedding model
+  (known-dimension preferred) read from this server's own
+  GET /v1/embeddings list, cached 60s. 2500ms budget: refinement, never a
+  stall. Unavailable/timeout/no-model → null → next stage.
+- **Wired**: `/v1/harness/classify` (useEmbeddings default ON,
+  embeddingModel pin, opt-out) and `/v1/router/candidates` (use_embeddings
+  / embedding_model params; no model stage on the router path — it stays
+  non-generative). `/quick` and `/plan` intentionally stay stage-1-only:
+  they are latency paths.
+
+Tests: `tests/unit/services/harness-b14.test.ts` (12 — exemplar integrity,
+centroid/cosine math incl. degenerate + dimension-mismatch safety, decisive
+winner / ambiguity / out-of-distribution, ladder order incl.
+match-skips-model and null-embed-falls-to-model, high-confidence and
+body-shape never embed, throwing embed, per-model centroid caching + text
+LRU call counts, model-race guard). Combined batch b1–b14+swarm 213/213;
+harness tsc 0 errors (29 files).
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

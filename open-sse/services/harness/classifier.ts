@@ -3,13 +3,19 @@
  * build B1). The piece that lets the gateway allocate models per task NEED
  * (the "Gemini allocator"): what kind of work is this, and how heavy is it?
  *
- * Two stages, cheapest first:
+ * Three stages, cheapest first:
  *   1. Heuristics (free, ~0 ms, always runs): body shape (image parts →
  *      vision) + keyword scoring over the user turns (code / math / search /
  *      research / chat). Deterministic and unit-tested — the mods.md
  *      `classify()` heir.
- *   2. Model fallback (opt-in, costs one cheap call): when stage 1 is
- *      ambivalent (low confidence) AND the caller supplies a dispatch
+ *   1.5 Embeddings (B14, opt-in, costs one cheap non-generative call):
+ *      when stage 1 is ambivalent (low confidence) AND the caller supplies
+ *      an `embed` function, the request text is embedded via the provider
+ *      /v1/embeddings surface and matched against per-type exemplar
+ *      centroids (embeddingClassifier.ts). Cheaper than stage 2, so it
+ *      runs first; every failure degrades downward, never breaks.
+ *   2. Model fallback (opt-in, costs one cheap generative call): when the
+ *      earlier stages stayed ambivalent AND the caller supplies a dispatch
  *      function, a classifier model re-reads the request and returns strict
  *      JSON. Any parse/validation failure falls back to stage 1 — the
  *      classifier can only REFINE the decision, never break the request.
@@ -21,6 +27,7 @@
  */
 
 import { TASK_TYPES, type TaskType } from "../modelTags/index.ts";
+import { EMBEDDING_HIGH_MARGIN, matchByEmbedding } from "./embeddingClassifier.ts";
 
 export type TaskComplexity = "fast" | "deep";
 
@@ -30,7 +37,7 @@ export type TaskClassification = {
   /** Content modalities detected in the request (e.g. ["vision"]). */
   modalities: string[];
   confidence: "high" | "medium" | "low";
-  stage: "heuristics" | "model";
+  stage: "heuristics" | "embeddings" | "model";
   /** The capability alias the harness would route this request to. */
   alias: string;
   /** Short human-readable explanation of the decision (logs, API surface). */
@@ -222,6 +229,12 @@ export type ClassifierDispatch = (
   model: string
 ) => Promise<Response>;
 
+/** The embedding source for stage 1.5 (B14): batch of texts → vectors in
+ *  one model's vector space, or null when unavailable (the stage degrades
+ *  downward). The route side wires this to the provider /v1/embeddings
+ *  surface via self-fetch; tests inject fakes. */
+export type ClassifierEmbed = (texts: string[]) => Promise<{ model: string; vectors: number[][] } | null>;
+
 const STAGE2_PROMPT = [
   "Classify the user's request for model routing. Reply with ONLY a JSON object, no prose:",
   '{"type": "code|research|math|reasoning|vision|search|chat", "complexity": "fast|deep", "reason": "<=12 words"}',
@@ -235,16 +248,39 @@ const STAGE2_PROMPT = [
 ].join("\n");
 
 /**
- * Classify a request. Stage 1 always runs; stage 2 (a cheap model call) only
- * when stage 1 confidence is low AND the caller provides a dispatch function.
- * Stage-2 failures (non-JSON, bad enum, HTTP error) degrade to stage 1.
+ * Classify a request. Stage 1 always runs; stage 1.5 (embeddings) and stage
+ * 2 (a cheap model call) only when stage 1 confidence is low AND the caller
+ * provides the respective function — embeddings first (cheaper). Stage
+ * failures (unavailable embedding source, non-JSON, bad enum, HTTP error)
+ * degrade downward, never to an error.
  */
 export async function classifyRequest(
   body: Body,
-  options: { dispatch?: ClassifierDispatch; classifierModel?: string } = {}
+  options: { dispatch?: ClassifierDispatch; classifierModel?: string; embed?: ClassifierEmbed } = {}
 ): Promise<TaskClassification> {
   const heuristic = classifyRequestBody(body);
-  if (heuristic.confidence !== "low" || !options.dispatch) return heuristic;
+  if (heuristic.confidence !== "low") return heuristic;
+
+  // Stage 1.5 (B14): one embedding call against exemplar centroids. Body
+  // facts are authoritative — a request that carries image/audio content
+  // is never re-decided by text semantics.
+  if (options.embed && heuristic.modalities.length === 0) {
+    const { text } = collectRequestText(body);
+    const match = text.trim() ? await matchByEmbedding(text, options.embed) : null;
+    if (match) {
+      return {
+        type: match.type,
+        complexity: heuristic.complexity,
+        modalities: heuristic.modalities,
+        confidence: match.margin >= EMBEDDING_HIGH_MARGIN && match.similarity >= 0.55 ? "high" : "medium",
+        stage: "embeddings",
+        alias: aliasForType(match.type),
+        reason: `embedding match: ${match.type} (cos ${match.similarity.toFixed(2)}, margin ${match.margin.toFixed(2)}${match.runnerUp ? ` vs ${match.runnerUp}` : ""})`,
+      };
+    }
+  }
+
+  if (!options.dispatch) return heuristic;
 
   const model = options.classifierModel?.trim() || "chat"; // the chat capability alias
   try {

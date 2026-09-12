@@ -2467,11 +2467,15 @@ paths:
       tags: [Harness]
       summary: Classify a chat request without executing it
       description: >-
-        Fork(harness B1). Stage-1 heuristics (free) classify the body into
-        type (code, research, math, vision, search, chat), complexity (fast,
-        deep) and detected modalities, plus the capability alias the harness
-        would route to. With useModel=true a cheap classifier call may
-        refine a low-confidence verdict; failures degrade to heuristics.
+        Fork(harness B1 + B14). Stage-1 heuristics (free) classify the body
+        into type (code, research, math, vision, search, chat), complexity
+        (fast, deep) and detected modalities, plus the capability alias the
+        harness would route to. Low-confidence verdicts refine cheapest-
+        first: stage 1.5 embeddings (B14, default on — one provider
+        /v1/embeddings call matched against per-type exemplar centroids;
+        disable with useEmbeddings=false, pin with embeddingModel) then
+        stage 2 (useModel=true, a cheap classifier call). Failures degrade
+        downward, never to an error.
       security:
         - BearerAuth: []
       requestBody:

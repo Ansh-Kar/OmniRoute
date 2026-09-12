@@ -102,6 +102,37 @@ export async function selfFetchImages({
  * auth rides the internal fetch, so admission/budget policies apply).
  */
 
+/** GET a model-list JSON from this server's own API with the caller's auth
+ *  forwarded (B14: the embedder's default-model resolution reads
+ *  GET /v1/embeddings this way — the catalog logic stays in its route). */
+export async function selfFetchList(
+  path: string,
+  incoming: Request,
+  timeoutMs = 2_500
+): Promise<Response> {
+  const origin = new URL(incoming.url).origin;
+  const headers = new Headers();
+  for (const name of FORWARDED_AUTH_HEADERS) {
+    const value = incoming.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  const upstream = await fetch(new URL(path, origin), { headers, signal: AbortSignal.timeout(timeoutMs) });
+  return upstream;
+}
+
+/** POST /v1/embeddings — B14: the classifier's embedding source. The call
+ *  rides the FULL native pipeline (provider selection, failover, keys),
+ *  with the caller's auth forwarded. Short default timeout: classification
+ *  is a refinement and must never stall the request. */
+export async function selfFetchEmbeddings({
+  incoming,
+  body,
+  timeoutMs = 2_500,
+  extraHeaders,
+}: Omit<SelfFetchChatOptions, "body"> & { body: Record<string, unknown> }): Promise<Response> {
+  return selfFetchJson("/api/v1/embeddings", incoming, body, extraHeaders, timeoutMs);
+}
+
 /** POST /v1/search — literal web search (no model; provider selected by the route). */
 export async function selfFetchSearch({
   incoming,

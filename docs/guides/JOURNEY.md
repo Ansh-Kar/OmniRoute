@@ -425,3 +425,50 @@ swarm-parallel pattern.
 **Scars**: the b5 suite deep-equals the ModelStat shape — adding optional
 p50/p95 fields means updating its three literal expectations (in-memory ×2,
 SQLite parity ×1); new optional fields are never free under deepEqual.
+
+## B14 — Embeddings at the classifier seam (provider /v1/embeddings)
+
+**User's decision**: the deferred embedding-source question answered —
+provider `/v1/embeddings` (not local transformers). The seam designed back
+in B1 (classifier stage boundaries) finally gets its stage.
+
+**What shipped**: `embeddingClassifier.ts` (pure) — 7 text-semantic types
+× 7 exemplars, cosine matching against per-type centroids with margin
+discipline (absolute ≥ 0.3 AND margin ≥ 0.03; ≥ 0.08 = high; ambiguous →
+keep the heuristic default), per-model centroid cache (6h, in-flight
+dedupe, model-race guard), 256-entry LRU for request texts.
+`classifyRequest` stage 1.5 (low-confidence + embed supplied + no media
+content); `embedder.ts` + `selfFetchEmbeddings`/`selfFetchList` route it
+through OmniRoute's OWN /v1/embeddings (full native pipeline, caller's
+auth forwarded, 2500ms budget, default model = first configured embedding
+model via this server's own models list, 60s cache, no naming required).
+Wired into /v1/harness/classify (useEmbeddings default ON) and
+/v1/router/candidates (use_embeddings / embedding_model).
+
+**Decisions**:
+- Embeddings sit BEFORE the model stage: cheaper, non-generative,
+  cache-friendly. A match skips the model call entirely.
+- The ladder contract is uniform: every stage REFINE-only — null on any
+  failure, degrade downward, never error. The request must survive its
+  classifier.
+- Media/body-shape types are never embedding-classifiable — stage 1's
+  body-shape rules are authoritative facts, not opinions to outvote.
+- An ambiguous embedding verdict keeps the heuristic default: "no
+  capability signal" is more honest than a 0.51-vs-0.49 coin flip.
+- Default model resolution via the server's own GET /v1/embeddings list
+  (self-fetch) rather than importing the catalog: the catalog route stays
+  the single authority on what's configured, and harness-check stays
+  clear of the upstream catalog tree's pre-existing type errors.
+- /quick and /plan stay stage-1-only on purpose — latency paths; the
+  refinement is for the router/classify surfaces where a wrong type has
+  routing consequences.
+
+**Scars**: `Object.assign(fn, { get calls() {...} })` snapshots the getter
+VALUE (0) at assign time — live counters on a function need
+`Object.defineProperty`; the cache-count test caught it because a frozen
+counter reads as a plausible zero. And axis-vector fakes need the axis
+ORDER pinned in the test's head (index 1 is research, not chat) — two
+assertions mislabeled the runner-up on the first run.
+
+Gates: b14 12/12 · batch b1–b14+swarm 213/213 · harness tsc 0 (29 files) ·
+openapi 99.3% (711/716).
