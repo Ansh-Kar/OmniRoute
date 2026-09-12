@@ -234,13 +234,17 @@ per-task `tag` optional (inferred from each prompt, logged `tag_inferred`);
 → `202 {ok, job_id, status:"active", accepted, inferred_tags, caller_model,
 bias_guard, scheduling}` — same runner, store, and semantics as `/plan`.
 
-**Bias guard** (active when `caller_model` is set and `policy.bias_guard`
-isn't false): sub-agent and judge dispatches avoid the caller's own model
-while a tag-viable alternative exists. Alias routing pins the best
-alternative (logged `bias_avoided`); assigned routing scores the caller's
-model ×0.6. No alternative → the task runs anyway and is flagged
-`bias_same_model: true` in the job view — visible, never silent, never a
-deadlock.
+**Bias guard — lenient** (active when `caller_model` is set and
+`policy.bias_guard` isn't false): sub-agent and judge dispatches avoid the
+caller's own model only on **near-ties** — when the best alternative's
+quality is within `policy.bias_tolerance` (0–1, default 0.85) of the
+caller candidate's. Inside that band, alias routing pins the best
+alternative (logged `bias_avoided`) and assigned routing scores the
+caller's model ×0.8. Outside the band, benchmark merit wins and the task
+is flagged `bias_same_model: true` in the job view — visible, never
+silent, never forced onto a worse model. `bias_tolerance: 0` = the B10
+strict behavior (always avoid); `1` = avoid only when the alternative is
+at least as good.
 
 ## 11. Per-completion loop — `wait-first`, refill, spawn (B10)
 
@@ -276,5 +280,13 @@ ready task starts in the freed slot; `task.wave` carries the dispatch
 ordinal; swarm blackboard merges land per completion, not per wave).
 
 New policy fields: `scheduling` (wave|stream), `bias_guard` (bool, default
-true), `max_children` (2–16, default 4). Job view adds `caller_model`,
-`parent_job_id`, per-task `bias_same_model`.
+true), `bias_tolerance` (0–1, default 0.85), `max_children` (2–16, default
+4). Job view adds `caller_model`, `parent_job_id`, per-task
+`bias_same_model`. Stream scheduling honors `routing: "assigned"` with
+run-scoped model diversity — parallel tasks never call the same model
+twice while alternatives remain (wave mode keeps per-wave diversity).
+
+**Companion guides**: `docs/guides/AGENT_TOOL_GUIDE.md` (the agent-facing
+skill — the whole tool surface + loop discipline) and
+`docs/guides/SETUP_HERMES.md` (user setup: providers → one key → point
+Hermes at the endpoint).

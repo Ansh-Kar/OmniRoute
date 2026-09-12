@@ -316,3 +316,32 @@ half is exactly what our alias/allocator stack already does.
   config error (TS6053 missing file) before typechecking. Lesson: a tsc
   run that errors on config checked nothing; always surface config-level
   failures as build-stop.
+
+## B11 — Lenient bias guard + parallel diversity + the two guides
+
+**The user's correction, parsed**: selection basis is category + benchmark
+score + provider/model identity; the tag is bookkeeping for parallel
+execution ("doesn't call the same model twice"); the bias guard was too
+eager — it should yield to benchmark merit. Plus: an agent guide for the
+tool and a setup guide for the user (base-project structure, one key).
+
+**What shipped**: `bias_tolerance` (default 0.85) — the guard only breaks
+near-ties toward diversity; outside the band the better model wins,
+flagged not forced (×0.6 → ×0.8 multiplier, and only inside the band).
+Stream mode now honors assigned routing with a run-scoped `usedModels`
+set — the literal "never call the same model twice" for parallel tasks,
+with exhaustion falling back to reuse. Two guides: the agent-facing
+skill (AGENT_TOOL_GUIDE) and the user setup (SETUP_HERMES).
+
+**Decisions**:
+- Tolerance gating lives in one pure function (`biasAvoidApplies`) shared
+  by the allocator and the alias pin — the leniency can never drift
+  between the two routing paths.
+- Strict mode (tolerance 0) is preserved as an explicit option, and the
+  b10 strict tests pin it — old behavior is a setting, not a deletion.
+- usedModels is caller-owned and ADDED-to by the allocator: the stream
+  runner owns the run scope, the allocator stays a pure function of its
+  inputs.
+- The setup guide leans on the base project's own surfaces (dashboard
+  Providers, API Manager) — the fork adds routing intelligence, not
+  setup steps.

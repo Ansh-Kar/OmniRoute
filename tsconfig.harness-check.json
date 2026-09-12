@@ -28,6 +28,7 @@
     "src/app/api/v1/orchestrate/jobs/[jobId]/route.ts",
     "src/app/api/v1/orchestrate/jobs/[jobId]/wait-first/route.ts",
     "src/app/api/v1/orchestrate/jobs/[jobId]/tasks/route.ts",
-    "tests/unit/services/harness-b10.test.ts"
+    "tests/unit/services/harness-b10.test.ts",
+    "tests/unit/services/harness-b11.test.ts"
   ]
 }

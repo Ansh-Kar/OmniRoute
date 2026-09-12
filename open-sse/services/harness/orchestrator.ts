@@ -40,6 +40,8 @@ import {
 export type { TaskType };
 import {
   assignModels,
+  biasAvoidApplies,
+  BIAS_AVOID_TOLERANCE,
   JUDGE_DRIFT_PENALTY,
   QUALITY_FLOOR,
   type AllocatorCandidate,
@@ -143,6 +145,14 @@ export type OrchestratePolicy = {
    * set false only for deliberate same-model ensembles.
    */
   bias_guard?: boolean;
+  /**
+   * B11 lenient bias guard: quality ratio (0–1) at which an alternative
+   * counts as near-equal to the caller's model — the guard only diversifies
+   * inside that band; a clearly better caller model wins on benchmark
+   * merit (flagged bias_same_model). 0 = always avoid (B10 strict);
+   * 1 = only avoid when the alternative is at least as good. Default 0.85.
+   */
+  bias_tolerance?: number;
   /**
    * B10 spawn: max concurrently ACTIVE child jobs a parent job may have
    * (the `orx agent spawn` in-flight cap analog). Default 4 (≥2 per the
@@ -447,6 +457,7 @@ export function validatePlan(body: OrchestratePlanBody): PlanValidation {
     verify_command: typeof rawPolicy.verify_command === "string" ? rawPolicy.verify_command : "",
     scheduling: rawPolicy.scheduling === "stream" ? "stream" : "wave",
     bias_guard: rawPolicy.bias_guard !== false,
+    bias_tolerance: Math.min(1, Math.max(0, Number.isFinite(Number(rawPolicy.bias_tolerance)) ? Number(rawPolicy.bias_tolerance) : BIAS_AVOID_TOLERANCE)),
     max_children: clampInt(rawPolicy.max_children, 2, 16, ORCHESTRATE_DEFAULTS.maxChildren),
   };
   return {
@@ -1059,31 +1070,51 @@ type LogFn = (taskId: string | null, event: string, detail?: string | null) => v
 // ── B10 bias guard ─────────────────────────────────────────────────────────
 
 /**
- * Should the bias guard engage for this job? Only when the caller named its
- * own model AND policy.bias_guard is not disabled. Absent caller model = no
- * guard (the B3–B9 behavior; unknown caller cannot be biased against).
+ * B10 bias guard: should the guard engage for this job? Only when the caller
+ * named its own model AND policy.bias_guard is not disabled. Absent caller
+ * model = no guard (the B3–B9 behavior; unknown caller cannot be biased
+ * against).
  */
 export function biasGuardActive(job: Pick<OrchestrateJob, "callerModel" | "policy">): boolean {
   return Boolean(job.callerModel) && job.policy.bias_guard !== false;
 }
 
 /**
- * B10 bias guard, alias routing: pick the best tag-viable model that is NOT
- * the caller's model. Returns null when the caller's model is not among the
- * viable candidates (alias fan-out already avoids it — nothing to do) or no
- * alternative exists (single-model tag: the task dispatches the alias and is
- * flagged bias_same_model — honest, never a silent self-assignment).
- * Media tags self-alias through the dispatch layer's registry ranking, so
- * the guard only engages for chat/search tags.
+ * B11 pure helper: pick the model to dispatch INSTEAD of the caller's own
+ * model, leniently — only when the best alternative's quality is within
+ * `tolerance` of the caller candidate's quality (a near-tie). Outside the
+ * band the caller's model wins on benchmark merit and this returns null
+ * (the task is flagged bias_same_model, never silently avoided or forced
+ * onto a worse model). Selection basis stays category + benchmark score +
+ * provider identity; the guard only breaks near-ties toward diversity.
  */
-export function pickBiasAvoidModel(tag: TaskType, budget: string, callerModel: string): string | null {
-  const candidates = candidatesForTag(tag, budget);
+export function pickBiasAvoidFromCandidates(
+  candidates: AllocatorCandidate[],
+  callerModel: string,
+  tolerance: number
+): string | null {
   const callerPresent = candidates.some((candidate) => candidate.model === callerModel);
   if (!callerPresent) return null;
+  if (!biasAvoidApplies(candidates, callerModel, tolerance)) return null;
   const alternative = candidates
     .filter((candidate) => candidate.model !== callerModel)
     .sort((a, b) => b.quality - a.quality)[0];
   return alternative ? alternative.model : null;
+}
+
+/**
+ * B10 bias guard, alias routing: pick the best tag-viable model that is NOT
+ * the caller's model — B11: leniently (see pickBiasAvoidFromCandidates).
+ * Media tags self-alias through the dispatch layer's registry ranking, so
+ * the guard only engages for chat/search tags.
+ */
+export function pickBiasAvoidModel(
+  tag: TaskType,
+  budget: string,
+  callerModel: string,
+  tolerance: number = BIAS_AVOID_TOLERANCE
+): string | null {
+  return pickBiasAvoidFromCandidates(candidatesForTag(tag, budget), callerModel, tolerance);
 }
 
 /** Wrap a chat task's prompt with the swarm shared context (media/search tasks skip it). */
@@ -1164,7 +1195,7 @@ export async function runJob(jobId: string, deps: RunnerDeps): Promise<void> {
     // with the best alternative instead (self-grading is the sharpest bias).
     const judgeBiasAvoid =
       biasGuardActive(job) && job.mode === "swarm"
-        ? pickBiasAvoidModel(judgeInput.tag, job.policy.budget, job.callerModel as string)
+        ? pickBiasAvoidModel(judgeInput.tag, job.policy.budget, job.callerModel as string, job.policy.bias_tolerance)
         : null;
     if (judgeBiasAvoid) {
       log(null, "bias_avoided", `judge: caller model ${job.callerModel} avoided; judging with ${judgeBiasAvoid}`);
@@ -1309,9 +1340,10 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
           maxPerProvider: current.policy.max_per_provider,
           statOf: (model) => stats[model],
           penaltyOf: (model) => penalties[model] ?? 0,
-          // B10 bias guard: the caller's own model scores ×0.6 while a
-          // tag-viable alternative remains (assigned routing path).
+          // B11 lenient bias guard: the caller's model is penalized only
+          // while a near-equal alternative exists (assigned routing path).
           avoidModel: biasGuardActive(current) ? (current.callerModel as string) : undefined,
+          avoidTolerance: current.policy.bias_tolerance,
           // B9: the live breaker feed — open providers score ×0.2 (guide
           // Part 8 formula), so a tripped provider stops winning
           // assignments until its breaker recovers.
@@ -1370,9 +1402,9 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
         // the alias dispatches as-is and jobToApi flags bias_same_model.
         let biasAvoidModel: string | null = null;
         if (!assignment && biasGuardActive(current) && (task.modality ?? MODALITY_BY_TAG[task.tag]) === "text") {
-          biasAvoidModel = pickBiasAvoidModel(task.tag, current.policy.budget, current.callerModel as string);
+          biasAvoidModel = pickBiasAvoidModel(task.tag, current.policy.budget, current.callerModel as string, current.policy.bias_tolerance);
           if (biasAvoidModel) {
-            log(taskId, "bias_avoided", `caller model ${current.callerModel} is tag-viable; dispatching ${biasAvoidModel} instead`);
+            log(taskId, "bias_avoided", `caller model ${current.callerModel} is near-tied; dispatching ${biasAvoidModel} instead`);
           }
         }
         const started = now();
@@ -1572,6 +1604,10 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
   const now = deps.now ?? Date.now;
   let ordinal = 0;
   const inflight = new Map<string, Promise<void>>();
+  // B11: run-scoped model diversity — assigned routing in stream mode never
+  // calls the same model twice while alternatives remain ("best of A, best
+  // of B…" across the WHOLE job, not per wave).
+  const usedModels = new Set<string>();
   /** Per-completion swarm bookkeeping (the "analyze each finish as it lands" move). */
   const onCompletion = async (taskId: string, text: string | null): Promise<void> => {
     if (text === null) return;
@@ -1662,6 +1698,42 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
       if (slots > 0 && ready.length > 0) {
         log(null, "stream_admit", `admitting ${Math.min(slots, ready.length)} task(s); ${inFlightIds.size} in flight`);
       }
+      // B11: assigned routing in stream mode — allocate the admission batch
+      // with the run-scoped usedModels so parallel tasks spread across
+      // models (the lenient bias guard applies inside the allocator).
+      const admissionAssignments = new Map<string, Assignment>();
+      if (slots > 0 && ready.length > 0 && current.policy.routing === "assigned") {
+        const stats = await Promise.resolve(store.aggregateModelStats());
+        const penalties = await Promise.resolve(store.getModelPenalties());
+        const admissionTasks = ready
+          .slice(0, slots)
+          .map((id) => byId.get(id))
+          .filter((task): task is OrchestrateTask => Boolean(task));
+        const { assignments: assigned, unassigned } = assignModels(
+          admissionTasks.map((task) => ({ id: task.id, tag: task.tag })),
+          (tag) => candidatesForTag(tag as TaskType, current.policy.budget),
+          {
+            maxPerProvider: current.policy.max_per_provider,
+            statOf: (model) => stats[model],
+            penaltyOf: (model) => penalties[model] ?? 0,
+            avoidModel: biasGuardActive(current) ? (current.callerModel as string) : undefined,
+            avoidTolerance: current.policy.bias_tolerance,
+            usedModels,
+            breakerOf: (_model, provider) => (provider ? deps.breakerOpen?.(provider) ?? false : false),
+          }
+        );
+        for (const [taskId, assignment] of assigned) {
+          admissionAssignments.set(taskId, assignment);
+          log(
+            taskId,
+            "task_assigned",
+            `${assignment.candidate.model} (${assignment.candidate.provider ?? "?"}) score ${assignment.score.toFixed(2)}`
+          );
+        }
+        for (const un of unassigned) {
+          log(un.id, "assign_fallback_alias", `${un.reason}; dispatching the capability alias instead`);
+        }
+      }
       while (slots > 0 && ready.length > 0) {
         const taskId = ready.shift() as string;
         const task = byId.get(taskId);
@@ -1677,12 +1749,14 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
 
           let prompt = effectivePrompt(current, task, byId);
           const alias = aliasForTag(task.tag, current.policy.budget);
-          // B10 bias guard, alias routing (same rule as the wave path).
+          const assignment = admissionAssignments.get(taskId) ?? null;
+          // B11 lenient bias guard, alias routing (near-ties diversify;
+          // clear benchmark superiority wins and is flagged, not forced away).
           let biasAvoidModel: string | null = null;
-          if (biasGuardActive(current) && (task.modality ?? MODALITY_BY_TAG[task.tag]) === "text") {
-            biasAvoidModel = pickBiasAvoidModel(task.tag, current.policy.budget, current.callerModel as string);
+          if (!assignment && biasGuardActive(current) && (task.modality ?? MODALITY_BY_TAG[task.tag]) === "text") {
+            biasAvoidModel = pickBiasAvoidModel(task.tag, current.policy.budget, current.callerModel as string, current.policy.bias_tolerance);
             if (biasAvoidModel) {
-              log(taskId, "bias_avoided", `caller model ${current.callerModel} is tag-viable; dispatching ${biasAvoidModel} instead`);
+              log(taskId, "bias_avoided", `caller model ${current.callerModel} is near-tied; dispatching ${biasAvoidModel} instead`);
             }
           }
           const started = now();
@@ -1711,7 +1785,7 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
               tag: task.tag,
               modality,
               alias,
-              assignedModel: biasAvoidModel,
+              assignedModel: assignment?.candidate.model ?? biasAvoidModel,
               messages: [{ role: "user", content: prompt }],
               prompt,
               timeoutMs: current.policy.task_timeout_ms,

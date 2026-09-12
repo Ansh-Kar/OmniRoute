@@ -447,6 +447,42 @@ barriers, stream retry/deadline/budget/swarm-per-completion, refill
 validation, lineage, jobToApi surface). Combined batch 177/177; harness
 tsc 0 errors; openapi 709/714 (99.3%).
 
+### 5m. B11 — Lenient bias guard + parallel-execution diversity (`feat(harness)`)
+
+User direction: "calling shall be on basis of category and benchmark
+scores and provider/model name; tag is just for parallel-execution
+tracking so it doesn't call same model twice; make the bias guard a
+little more lenient" — plus an agent guide and a user setup guide.
+
+- **Lenient bias guard** — `policy.bias_tolerance` (0–1, default 0.85).
+  The guard now only diversifies on NEAR-TIES: the best alternative's
+  quality must be within `tolerance ×` the caller candidate's quality
+  (`biasAvoidApplies`, pure, shared by both routing paths). Inside the
+  band: alias routing pins the best alternative, assigned routing scores
+  the caller's model ×0.8 (was ×0.6). Outside: benchmark merit wins, the
+  task is flagged `bias_same_model` — a clearly superior caller model is
+  never overridden. Tolerance 0 = B10's strict always-avoid, preserved as
+  an explicit option.
+- **Stream assigned routing + run-scoped diversity** — stream mode now
+  honors `routing: "assigned"` (per-admission allocation with the same
+  stats/penalties/breakers/bias feeds as the wave path) and carries a
+  `usedModels` set across the WHOLE job (`AssignOptions.usedModels`,
+  caller-owned): parallel tasks never call the same model twice while
+  alternatives remain; pool exhaustion falls back to reuse, never a
+  deadlock. Wave mode keeps its per-wave semantics, unchanged.
+- **Guides** — `docs/guides/AGENT_TOOL_GUIDE.md`: the agent-facing skill
+  (contract: never name models; the surface table; the per-completion
+  loop discipline; spawn rules; failure semantics; anti-patterns) and
+  `docs/guides/SETUP_HERMES.md`: the user setup (base-project structure
+  unchanged: dashboard providers → ONE API key → Hermes base URL +
+  skill install; smoke tests; knob table; troubleshooting).
+
+Tests: `tests/unit/services/harness-b11.test.ts` (8 — the lenient matrix
+pure, allocator merit-vs-band, usedModels spread/exhaustion, policy
+clamps, stream×assigned 3-tasks-3-models, strict tolerance 0, honest
+default-flag e2e). b10 updated for the lenient default (strict cases pin
+tolerance 0). Combined batch 185/185; harness tsc 0 errors.
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

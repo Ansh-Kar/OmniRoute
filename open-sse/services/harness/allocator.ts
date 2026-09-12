@@ -106,14 +106,30 @@ export type AssignOptions = {
   /** Judge-drift quality penalties per model (subtracted from quality). */
   penaltyOf?: (model: string) => number;
   /**
-   * B10 bias guard: the calling agent's own model. A same-model sub-agent
-   * inherits the caller's blind spots (self-preference bias), so it scores
-   * ×BIAS_AVOID_MULTIPLIER while any tag-viable alternative remains — a
-   * penalty, not a ban: with no alternative, or an overwhelmingly better
-   * caller model, the caller model still wins (and the task is flagged
-   * bias_same_model in the API). Undefined = no guard (B3–B9 behavior).
+   * B11 lenient bias guard: the calling agent's own model. The penalty
+   * applies ONLY while a near-equal alternative exists — the best other
+   * candidate's quality ≥ avoidTolerance × the caller candidate's quality.
+   * Outside that band the caller model wins on benchmark merit (the
+   * selection basis is category + benchmark score + provider identity, so
+   * a clearly-superior caller model is not overridden). Undefined = no
+   * guard (B3–B9 behavior).
    */
   avoidModel?: string;
+  /**
+   * B11: quality ratio (0–1) at which an alternative counts as "near-equal"
+   * for the bias guard. Default BIAS_AVOID_TOLERANCE (0.85). 0 = always
+   * avoid (B10's strict behavior); 1 = only avoid when the alternative is
+   * at least as good as the caller's model.
+   */
+  avoidTolerance?: number;
+  /**
+   * B11 parallel-execution diversity: models already assigned in this run
+   * (stream scheduling carries the set across the whole job — "never call
+   * the same model twice" while slots are parallel). Reusing an
+   * already-assigned model stays possible (the fallback), never the first
+   * pick. Caller-owned: chosen models are ADDED to this set.
+   */
+  usedModels?: Set<string>;
   /**
    * Breaker state per candidate (B9: the feed is live — the plan route
    * passes the provider-keyed circuit-breaker registry via
@@ -123,8 +139,28 @@ export type AssignOptions = {
   breakerOf?: (model: string, provider: string | null) => boolean;
 };
 
-/** B10 bias guard: score multiplier for the caller's own model. */
-export const BIAS_AVOID_MULTIPLIER = 0.6;
+/** B11 lenient bias guard: score multiplier for the caller's own model. */
+export const BIAS_AVOID_MULTIPLIER = 0.8;
+
+/** B11 lenient bias guard: default near-equal quality ratio. */
+export const BIAS_AVOID_TOLERANCE = 0.85;
+
+/**
+ * B11: does a near-equal alternative to the caller's model exist in this
+ * pool? Pure — shared by the allocator and the alias-path pin.
+ */
+export function biasAvoidApplies(
+  candidates: AllocatorCandidate[],
+  avoidModel: string,
+  tolerance: number
+): boolean {
+  const caller = candidates.find((candidate) => candidate.model === avoidModel);
+  if (!caller) return false;
+  const bestOther = candidates
+    .filter((candidate) => candidate.model !== avoidModel)
+    .reduce((best, candidate) => Math.max(best, candidate.quality), 0);
+  return bestOther >= tolerance * caller.quality;
+}
 
 export type Assignment = {
   task: string;
@@ -149,7 +185,7 @@ export function assignModels(
   options: AssignOptions
 ): { assignments: Map<string, Assignment>; unassigned: Array<{ id: string; reason: string }> } {
   const perProvider = new Map<string, number>();
-  const usedModels = new Set<string>();
+  const usedModelsLocal = new Set<string>();
   const assignments = new Map<string, Assignment>();
   const unassigned: Array<{ id: string; reason: string }> = [];
 
@@ -159,6 +195,11 @@ export function assignModels(
       unassigned.push({ id: task.id, reason: "no candidates for tag" });
       continue;
     }
+    // B11 lenient bias guard: the penalty only engages while a near-equal
+    // alternative exists (biasAvoidApplies); otherwise benchmark merit wins.
+    const biasApplies =
+      options.avoidModel !== undefined &&
+      biasAvoidApplies(candidates, options.avoidModel, options.avoidTolerance ?? BIAS_AVOID_TOLERANCE);
     const scored = candidates.map((candidate, index) => {
       const penalty = options.penaltyOf?.(candidate.model) ?? 0;
       const quality = Math.max(QUALITY_FLOOR, candidate.quality - penalty);
@@ -166,7 +207,7 @@ export function assignModels(
         quality,
         stat: options.statOf?.(candidate.model),
         breakerOpen: options.breakerOf?.(candidate.model, candidate.provider ?? null) ?? false,
-      }) * (options.avoidModel && candidate.model === options.avoidModel ? BIAS_AVOID_MULTIPLIER : 1);
+      }) * (biasApplies && options.avoidModel === candidate.model ? BIAS_AVOID_MULTIPLIER : 1);
       return { candidate, score, index };
     });
     // Highest score wins; ties keep the tag index's original order (index).
@@ -177,6 +218,10 @@ export function assignModels(
     // Prefer providers with capacity AND models not already assigned this
     // wave (guide "best of A, best of B, then second of A"); reuse of an
     // already-assigned model is the fallback, never the first pick.
+    // B11: the set is seeded with the caller's run-scoped usedModels
+    // (stream scheduling tracks the whole job — parallel tasks never call
+    // the same model twice while alternatives remain).
+    const usedModels = options.usedModels ?? usedModelsLocal;
     const chosen =
       scored.find((entry) => hasCapacity(entry) && !usedModels.has(entry.candidate.model)) ??
       scored.find((entry) => hasCapacity(entry));

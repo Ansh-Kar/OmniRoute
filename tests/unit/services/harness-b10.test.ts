@@ -244,15 +244,24 @@ test("biasGuardActive: only when the caller named its model and policy allows", 
   assert.equal(biasGuardActive({ ...job, callerModel: "some-model", policy: { ...job.policy, bias_guard: false } }), false, "explicit opt-out");
 });
 
-test("pickBiasAvoidModel: returns a DIFFERENT viable model; null when the caller isn't viable", () => {
+test("pickBiasAvoidModel: strict tolerance avoids; default is lenient (near-ties only)", () => {
   candidatesForTag("code", "any"); // warm the tag index (first read can race lazy init)
   const codeCandidates = candidatesForTag("code", "any");
   assert.ok(codeCandidates.length >= 2, "test needs a code pool with alternatives");
   const callerModel = codeCandidates[0].model;
-  const avoided = pickBiasAvoidModel("code", "any", callerModel);
+  // B11 strict mode (tolerance 0 = B10 behavior): always avoids when the
+  // caller is viable.
+  const avoided = pickBiasAvoidModel("code", "any", callerModel, 0);
   assert.ok(avoided !== null);
   assert.notEqual(avoided, callerModel);
   assert.ok(codeCandidates.some((c) => c.model === avoided), "avoid pick is from the same viability pool");
+  // Default (lenient): a near-tie diversifies; clear superiority wins —
+  // either a pool member ≠ caller, or null (caller keeps the task).
+  const lenient = pickBiasAvoidModel("code", "any", callerModel);
+  assert.ok(
+    lenient === null || (lenient !== callerModel && codeCandidates.some((c) => c.model === lenient)),
+    "lenient pick is a pool member or null"
+  );
   // A model the tag never routes to → nothing to avoid.
   assert.equal(pickBiasAvoidModel("code", "any", "definitely-not-a-real-model-xyz"), null);
 });
@@ -280,7 +289,7 @@ test("e2e: alias routing + caller_model avoids the caller's model", async () => 
   const codeCandidates = candidatesForTag("code", "any");
   const callerModel = codeCandidates[0].model;
   const store = new InMemoryJobsStore();
-  const job = jobFromTasks([{ id: "t1", prompt: "write fib in python" }], { routing: "alias" });
+  const job = jobFromTasks([{ id: "t1", prompt: "write fib in python" }], { routing: "alias", bias_tolerance: 0 });
   job.jobId = "job_bias";
   for (const task of job.tasks) task.jobId = "job_bias";
   job.callerModel = callerModel;
@@ -307,7 +316,7 @@ test("e2e: assigned routing passes the caller model to the allocator (avoided)",
   const codeCandidates = candidatesForTag("code", "any");
   const callerModel = codeCandidates[0].model;
   const store = new InMemoryJobsStore();
-  const job = jobFromTasks([{ id: "t1", prompt: "write fib in rust" }], { routing: "assigned" });
+  const job = jobFromTasks([{ id: "t1", prompt: "write fib in rust" }], { routing: "assigned", bias_tolerance: 0 });
   job.jobId = "job_bias2";
   for (const task of job.tasks) task.jobId = "job_bias2";
   job.callerModel = callerModel;
