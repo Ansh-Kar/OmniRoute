@@ -2,12 +2,24 @@
   "extends": "./tsconfig.typecheck-core.json",
   "compilerOptions": {
     "paths": {
-      "@/*": ["./src/*"],
-      "@omniroute/open-sse": ["./open-sse"],
-      "@omniroute/open-sse/*": ["./open-sse/*"],
-      "@omniroute/browser-pool": ["./packages/browser-pool/src"],
-      "playwright": ["./.fastcheck-stubs/playwright.d.ts"],
-      "@huggingface/transformers": ["./.fastcheck-stubs/huggingface.d.ts"]
+      "@/*": [
+        "./src/*"
+      ],
+      "@omniroute/open-sse": [
+        "./open-sse"
+      ],
+      "@omniroute/open-sse/*": [
+        "./open-sse/*"
+      ],
+      "@omniroute/browser-pool": [
+        "./packages/browser-pool/src"
+      ],
+      "playwright": [
+        "./.fastcheck-stubs/playwright.d.ts"
+      ],
+      "@huggingface/transformers": [
+        "./.fastcheck-stubs/huggingface.d.ts"
+      ]
     }
   },
   "files": [
@@ -29,6 +41,9 @@
     "src/app/api/v1/orchestrate/jobs/[jobId]/wait-first/route.ts",
     "src/app/api/v1/orchestrate/jobs/[jobId]/tasks/route.ts",
     "tests/unit/services/harness-b10.test.ts",
-    "tests/unit/services/harness-b11.test.ts"
+    "tests/unit/services/harness-b11.test.ts",
+    "open-sse/services/harness/capabilityRegistry.ts",
+    "src/app/api/v1/router/candidates/route.ts",
+    "tests/unit/services/harness-b12.test.ts"
   ]
 }

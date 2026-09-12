@@ -780,6 +780,11 @@ export interface JobsStore {
   requeueExpiredLeases(jobId: string, now: number): Promise<string[]> | string[];
   /** B5: per-model outcome aggregates across all jobs (allocator health/speed feed). */
   aggregateModelStats(): Promise<Record<string, ModelStat>> | Record<string, ModelStat>;
+  /**
+   * B12 closed loop: per-(model × task-category) outcome aggregates — the
+   * P(success | model, task) feed. Keyed `"<model>|<tag>"`.
+   */
+  aggregateModelStatsByCategory(): Promise<Record<string, ModelStat>> | Record<string, ModelStat>;
   /** B5: judge-drift quality penalties per model (Part 8 drift loop). */
   getModelPenalties(): Promise<Record<string, number>> | Record<string, number>;
   /** B5: record a judge verdict for a model; penalize on fail streak ≥ 2. */
@@ -881,6 +886,24 @@ export class InMemoryJobsStore implements JobsStore {
       for (const task of job.tasks) {
         if (!task.assignedModel) continue;
         const stat = (stats[task.assignedModel] ??= { successes: 0, failures: 0, totalLatencyMs: 0 });
+        if (task.state === "done") {
+          stat.successes += 1;
+          stat.totalLatencyMs += task.latencyMs ?? 0;
+        } else if (task.state === "failed") {
+          stat.failures += 1;
+        }
+      }
+    }
+    return stats;
+  }
+
+  aggregateModelStatsByCategory(): Record<string, ModelStat> {
+    const stats: Record<string, ModelStat> = {};
+    for (const job of this.jobs.values()) {
+      for (const task of job.tasks) {
+        if (!task.assignedModel) continue;
+        const key = `${task.assignedModel}|${task.tag}`;
+        const stat = (stats[key] ??= { successes: 0, failures: 0, totalLatencyMs: 0 });
         if (task.state === "done") {
           stat.successes += 1;
           stat.totalLatencyMs += task.latencyMs ?? 0;
@@ -1329,6 +1352,7 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
     const assignments = new Map<string, Assignment>();
     if (current.policy.routing === "assigned") {
       const stats = await Promise.resolve(store.aggregateModelStats());
+      const statsByCategory = await Promise.resolve(store.aggregateModelStatsByCategory());
       const penalties = await Promise.resolve(store.getModelPenalties());
       const assignTasks = executing
         .map((id) => byId.get(id))
@@ -1338,7 +1362,10 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
         (tag) => candidatesForTag(tag as TaskType, current.policy.budget),
         {
           maxPerProvider: current.policy.max_per_provider,
-          statOf: (model) => stats[model],
+          // B12 closed loop: per-(model × category) evidence first, the
+          // global aggregate as fallback — the allocator learns
+          // P(success | model, task), not just P(success | model).
+          statOf: (model, tag) => (tag !== undefined ? statsByCategory[`${model}|${tag}`] : undefined) ?? stats[model],
           penaltyOf: (model) => penalties[model] ?? 0,
           // B11 lenient bias guard: the caller's model is penalized only
           // while a near-equal alternative exists (assigned routing path).
@@ -1704,6 +1731,7 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
       const admissionAssignments = new Map<string, Assignment>();
       if (slots > 0 && ready.length > 0 && current.policy.routing === "assigned") {
         const stats = await Promise.resolve(store.aggregateModelStats());
+        const statsByCategory = await Promise.resolve(store.aggregateModelStatsByCategory());
         const penalties = await Promise.resolve(store.getModelPenalties());
         const admissionTasks = ready
           .slice(0, slots)
@@ -1714,7 +1742,7 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
           (tag) => candidatesForTag(tag as TaskType, current.policy.budget),
           {
             maxPerProvider: current.policy.max_per_provider,
-            statOf: (model) => stats[model],
+            statOf: (model, tag) => (tag !== undefined ? statsByCategory[`${model}|${tag}`] : undefined) ?? stats[model],
             penaltyOf: (model) => penalties[model] ?? 0,
             avoidModel: biasGuardActive(current) ? (current.callerModel as string) : undefined,
             avoidTolerance: current.policy.bias_tolerance,

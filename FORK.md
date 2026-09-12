@@ -483,6 +483,39 @@ clamps, stream×assigned 3-tasks-3-models, strict tolerance 0, honest
 default-flag e2e). b10 updated for the lenient default (strict cases pin
 tolerance 0). Combined batch 185/185; harness tsc 0 errors.
 
+### 5n. B12 — The capability registry (layered router) (`feat(harness)`)
+
+The user's layered pipeline, implemented: Task → hard capability filter →
+unified ranking → tiered candidates with FULL fallback visibility.
+
+- **`open-sse/services/harness/capabilityRegistry.ts`** (pure): ModelDescriptor
+  assembly from the tag index (capability matrix incl. tool_calling/code
+  from categories+axes; specializations derived from benchmark axes,
+  enriched per model; operational context/latency/cost; reliability from
+  empirical stats) + `filterCandidates` (deterministic elimination:
+  modality, capability, tool_calling, min_context) + `unifiedScore`
+  (capability_match × benchmark × historical_success × reliability /
+  cost_penalty / latency_penalty — unknown evidence is neutral, never
+  zeroing) + `rankCandidates` (PRIMARY/SECONDARY/FALLBACK, every filtered
+  candidate retained) + `selfAssess` (the equal-scoring rule: the caller
+  is ranked by the identical function; would_win / filtered /
+  unregistered — no self-bonus, no self-penalty).
+- **Closed loop**: `aggregateModelStatsByCategory()` on both stores (keyed
+  `model|tag`) feeds the descriptor's per-category rates AND the
+  allocator's `statOf(model, tag)` in both assigned-routing paths — the
+  router learns P(success | model, task); the benchmark is only the prior.
+  E2E test proves a workload history (10 chat failures) flips a real
+  allocation away from the prior's winner.
+- **`GET/POST /v1/router/candidates`**: the Hermes-facing surface —
+  classify-from-prompt, filter stats (pool/eliminated), tiers, ranked
+  candidates with score breakdowns + full metadata, self-assessment.
+
+Tests: `tests/unit/services/harness-b12.test.ts` (9 — assembly + enrichment,
+hard filter, exact neutral math, empirical closed loop, tiers, equal
+scoring incl. filtered/unregistered, allocator per-category routing,
+store-level model|tag stats, the flip e2e). Combined batch 194/194; harness
+tsc 0 errors; openapi 710/715 (99.3%).
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

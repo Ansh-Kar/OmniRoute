@@ -101,8 +101,13 @@ export type AllocatorCandidate = {
 export type AssignOptions = {
   /** Max assignments per provider per wave (guide Part 4 step 4). */
   maxPerProvider: number;
-  /** Live per-model stats (optional — neutral when absent). */
-  statOf?: (model: string) => ModelStat | undefined;
+  /**
+   * Live per-model stats (optional — neutral when absent). B12 closed loop:
+   * receives the task's TAG as the second argument so callers can feed
+   * per-(model × category) evidence (P(success | model, task)); single-arg
+   * implementations keep working (the tag is simply ignored).
+   */
+  statOf?: (model: string, tag?: string) => ModelStat | undefined;
   /** Judge-drift quality penalties per model (subtracted from quality). */
   penaltyOf?: (model: string) => number;
   /**
@@ -205,7 +210,7 @@ export function assignModels(
       const quality = Math.max(QUALITY_FLOOR, candidate.quality - penalty);
       const score = scoreCandidate({
         quality,
-        stat: options.statOf?.(candidate.model),
+        stat: options.statOf?.(candidate.model, task.tag),
         breakerOpen: options.breakerOf?.(candidate.model, candidate.provider ?? null) ?? false,
       }) * (biasApplies && options.avoidModel === candidate.model ? BIAS_AVOID_MULTIPLIER : 1);
       return { candidate, score, index };

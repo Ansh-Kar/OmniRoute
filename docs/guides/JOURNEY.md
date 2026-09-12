@@ -345,3 +345,34 @@ skill (AGENT_TOOL_GUIDE) and the user setup (SETUP_HERMES).
 - The setup guide leans on the base project's own surfaces (dashboard
   Providers, API Manager) — the fork adds routing intelligence, not
   setup steps.
+
+## B12 — The capability registry (the layered router)
+
+**The user's spec, nearly verbatim**: rich per-model descriptors
+(capabilities / specializations / benchmarks / operational / reliability /
+preferred_for); a two-stage pipeline (hard capability filter 100→17, then
+unified ranking 17→3); Hermes gets ALL candidates as PRIMARY/SECONDARY/
+FALLBACK with multi-dimensional metadata for contextual judgment; the
+router maintains empirical P(success | model, task) instead of trusting
+benchmarks (closed loop: result → evaluator → update stats → router); and
+the rule that the router cannot select itself unless it wins the SAME
+scoring function applied to everyone.
+
+**What shipped**: capabilityRegistry.ts (pure) + the per-category closed
+loop on both stores and both assigned-routing paths + /v1/router/candidates
+with equal-scoring self-assessment + the agent guide's delegation decision
+tree ("Can I do it?" → trivial/specialized/complex/outside, answered by
+the registry not by confidence).
+
+**Decisions**:
+- Unknown evidence is NEUTRAL (multiplier 1, smoothed 0.75 for empirical)
+  — absence of evidence never zeroes a candidate and never promotes one.
+- categoryRates are built from every observed (model|category) key, not
+  the model's own categories — a vision model with observed code history
+  surfaces that history (the first test draft got this wrong; the fix
+  removed the model-categorization dependency entirely).
+- Equal scoring supersedes nothing: B11's near-tie diversification still
+  governs dispatch; B12's rule governs PRESENTATION and self-assessment.
+  The caller sees its honest rank; the orchestrator still breaks near-ties
+  toward diversity.
+- swe_bench counts as code capability (humaneval alone was too narrow).

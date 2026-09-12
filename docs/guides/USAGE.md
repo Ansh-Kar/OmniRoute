@@ -290,3 +290,51 @@ twice while alternatives remain (wave mode keeps per-wave diversity).
 skill — the whole tool surface + loop discipline) and
 `docs/guides/SETUP_HERMES.md` (user setup: providers → one key → point
 Hermes at the endpoint).
+
+## 12. Layered capability router — `GET/POST /v1/router/candidates` (B12)
+
+The pipeline, explicitly:
+
+```
+Task → Capability filter (hard elimination: modality, capability,
+tool_calling, min_context — 100 → 17) → Ranking (capability_match ×
+benchmark × historical_success × reliability / cost_penalty /
+latency_penalty — 17 → 3) → PRIMARY / SECONDARY / FALLBACK tiers,
+ALL candidates retained.
+```
+
+```bash
+curl -s -X POST "http://localhost:20128/v1/router/candidates" \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"prompt": "read the error from this screenshot", "modality": "image",
+       "tool_calling": true, "caller_model": "gpt-4o"}'
+```
+
+→ `{task: {type, modality}, filter: {pool, eliminated, candidates},
+tiers: {primary, secondary, fallback}, candidates: [{id, provider, tier,
+rank, score, score_breakdown, capabilities, specializations, benchmarks,
+operational, reliability, preferred_for}], self: {rank, score, would_win,
+status}}`.
+
+Three architectural rules:
+
+- **Closed loop** — `historical_success` is EMPIRICAL per-(model × category)
+  success from the jobs store (`aggregateModelStatsByCategory`, keyed
+  `model|tag`), fed into the allocator's assigned-routing paths too. The
+  router learns P(success | model, task) as work flows through it; the
+  benchmark is only the prior.
+- **Equal scoring** — `caller_model` is ranked by the IDENTICAL function:
+  `would_win: true` means the caller legitimately won; `status:
+  "filtered"|"unregistered"` says why it's absent. No self-bonus, no
+  self-penalty. (Near-tie dispatch diversification remains B11's
+  `bias_tolerance`.)
+- **Full visibility** — every filtered candidate stays in the response with
+  per-dimension metadata, so the brain can exercise contextual judgment
+  ("Qwen-VL normally wins OCR, but this image is a UI screenshot and Model
+  C has better UI understanding") while the tiers say what the
+  deterministic router would try first.
+
+Specializations start from benchmark axes (swe_tasks, coding, math,
+hard_reasoning, knowledge, conversation, visual_reasoning) and grow via the
+enrichment table (`buildModelDescriptors` opts: specializations +
+cost_per_million_tokens per model).

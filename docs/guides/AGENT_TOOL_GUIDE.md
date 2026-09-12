@@ -38,6 +38,7 @@ hidden, never forced onto a worse model.
 | `POST /v1/orchestrate/spawn` | Delegate a self-contained task to a helper job. |
 | `GET /v1/orchestrate/wait?job_ids=a,b&timeout=30` | Wake when ANY of several jobs completes. |
 | `POST /v1/harness/classify` | Ask what the gateway would route a prompt as (debugging). |
+| `GET/POST /v1/router/candidates` | **Self-assessment.** Who can serve this task — including YOU, ranked by the identical score. |
 | `GET /v1/models/best?task=code&limit=6` | See the ranked candidates for a category (never required). |
 
 ## 2. Submit an objective
@@ -137,7 +138,32 @@ for anything you'll parallelize.
   Read the task rows, not just the status.
 - Unknown job id (404): the job is gone or expired — resubmit the work.
 
-## 7. Anti-patterns
+## 7. "Can I do it myself?" — the delegation decision tree
+
+Before doing any task yourself, ask the registry — not your own confidence:
+
+```
+Can I do it?
+  ├── trivial (one short reply, no lookup)        → do it
+  ├── within capability but specialized           → compare external
+  │     (router/candidates: your rank vs PRIMARY)    specialists
+  ├── complex / long / parallelizable             → delegate / swarm
+  └── outside capability (vision? OCR? media?)    → delegate, always
+```
+
+`POST /v1/router/candidates` with `caller_model` names yourself and returns
+your rank under the SAME scoring function every other model is scored by —
+`would_win: true` means doing it yourself is genuinely the best route;
+`status: "filtered"` means you can't serve it at all. You also get
+PRIMARY/SECONDARY/FALLBACK tiers with EVERY filtered candidate and its
+dimensions (specializations, benchmarks, reliability, cost, latency), so
+contextual judgment is yours: if the image is a UI screenshot, prefer the
+model whose `ui_understanding` is high even when it's SECONDARY.
+
+The routing engine knows whether a model is "better than you" — you don't
+have to. Use it.
+
+## 8. Anti-patterns
 
 - **Naming a model.** Never. If you find yourself wanting a specific model,
   name the CATEGORY and let the benchmarks decide.

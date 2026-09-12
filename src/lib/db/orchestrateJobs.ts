@@ -323,6 +323,33 @@ export class SqliteJobsStore {
     return stats;
   }
 
+  /** B12 closed loop: per-(model × category) aggregates, keyed `model|tag`. */
+  aggregateModelStatsByCategory(): Record<string, ModelStat> {
+    ensureOrchestrateTables();
+    const db = getDbInstance();
+    const rows = db
+      .prepare(
+        `SELECT assigned_model AS model,
+                tag AS tag,
+                SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END) AS successes,
+                SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS failures,
+                SUM(CASE WHEN state = 'done' THEN COALESCE(latency_ms, 0) ELSE 0 END) AS totalLatencyMs
+         FROM orchestrate_tasks
+         WHERE assigned_model IS NOT NULL AND assigned_model != ''
+         GROUP BY assigned_model, tag`
+      )
+      .all() as Array<{ model: string; tag: string; successes: number; failures: number; totalLatencyMs: number }>;
+    const stats: Record<string, ModelStat> = {};
+    for (const row of rows) {
+      stats[`${row.model}|${row.tag}`] = {
+        successes: Number(row.successes) || 0,
+        failures: Number(row.failures) || 0,
+        totalLatencyMs: Number(row.totalLatencyMs) || 0,
+      };
+    }
+    return stats;
+  }
+
   getModelPenalties(): Record<string, number> {
     ensureOrchestrateTables();
     const db = getDbInstance();

@@ -13902,6 +13902,98 @@ paths:
         "409":
           description: job_terminal or duplicate_id.
 
+  /api/v1/router/candidates:
+    get:
+      tags: [Harness]
+      summary: Layered capability router — filter, rank, tier (B12)
+      description: >-
+        Fork(harness B12). The layered router surface: Task → hard capability
+        filter (modality, capability, tool_calling, min_context —
+        deterministic elimination) → unified ranking (capability_match ×
+        benchmark × historical_success × reliability / cost_penalty /
+        latency_penalty, where historical_success is EMPIRICAL per-(model ×
+        category) success from the jobs store — the closed loop) →
+        PRIMARY/SECONDARY/FALLBACK tiers with ALL filtered candidates
+        retained so the caller can exercise contextual judgment. caller_model
+        triggers the equal-scoring self-assessment: the caller is ranked by
+        the IDENTICAL function — would_win means it legitimately won; status
+        filtered/unregistered says why it's absent. POST accepts the same
+        fields as JSON (plus prompt for classification).
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: prompt
+          in: query
+          required: false
+          schema: { type: string }
+          description: Task text; classified for type + modality when given.
+        - name: modality
+          in: query
+          required: false
+          schema: { type: string, enum: [text, image, audio, video] }
+        - name: capability
+          in: query
+          required: false
+          schema: { type: string }
+          description: Required capability key (vision, code, reasoning, tool_calling, ...).
+        - name: tool_calling
+          in: query
+          required: false
+          schema: { type: boolean }
+        - name: specialization
+          in: query
+          required: false
+          schema: { type: string }
+          description: Task specialization (ocr, ui_understanding, swe_tasks, ...) — feeds capability_match.
+        - name: category
+          in: query
+          required: false
+          schema: { type: string }
+        - name: min_context
+          in: query
+          required: false
+          schema: { type: integer }
+        - name: top
+          in: query
+          required: false
+          schema: { type: integer }
+          description: PRIMARY+SECONDARY ceiling (default 3, max 16).
+        - name: caller_model
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: "task, filter, tiers, candidates (ranked, with score breakdowns + full metadata), self."
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      tags: [Harness]
+      summary: Layered capability router — filter, rank, tier (B12, JSON body)
+      description: >-
+        Same surface as GET, JSON body (use for long prompts). Fields:
+        prompt, modality, capability, tool_calling, specialization, category,
+        min_context, top, caller_model.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: "task, filter, tiers, candidates, self."
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Invalid body.
+
 components:
   securitySchemes:
     BearerAuth:
