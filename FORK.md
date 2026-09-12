@@ -779,6 +779,37 @@ git rebase upstream/release/v3.8.5x   # conflicts expected only in:
 ```
 
 The fork's code footprint is deliberately small and additive (one new module
+### 5s. B16.1 — The Hermes integration surface completed (`feat(harness)`)
+
+The Hermes-side counterpart guide arrived (27 sections, committed verbatim
+at `docs/guides/Hermes_Revised_Intelligent_Agent_Integration_Guide.md`).
+Its §22 integration surface has four items; three already shipped and this
+build closes the fourth:
+
+1. **Client/provider integration** — OmniRoute speaks OpenAI-compatible
+   `/v1/chat/completions`; Hermes adds it as a provider. *(shipped, upstream)*
+2. **Optional /route query** — `POST /v1/route` compact decision, B16.
+3. **Execution-policy instruction** — client-side (Hermes profile/SOUL);
+   the fork's counterpart rule ships in `AGENT_TOOL_GUIDE` (B16, verbatim).
+4. **Structured outcome callback** — **this build**: `POST /v1/router/outcomes`
+   records client-side Bot executions into workflow memory; `GET ?workflow=`
+   reads the per-(workflow, model, tools) history back. Bot Mode is a Hermes
+   profile (pinned model, own memory/skills/tools) executing in the client
+   runtime — §26: *OmniRoute may select the Bot's underlying model but does
+   not orchestrate the research* — so outcomes arrive by callback, not
+   observation. `coerceWorkflowOutcome` validates without inventing fields
+   (finite ≥ 0 numerics, `quality_score` clamped 0..1, optional booleans);
+   workflow memory only, never model benchmarks.
+
+Surface: `open-sse/services/harness/workflowMemory.ts` (+`coerceWorkflowOutcome`),
+`src/app/api/v1/router/outcomes/route.ts` (GET/POST), openapi (both copies),
+AGENT_TOOL_GUIDE row, USAGE §15, guide verbatim. Verified against Hermes
+Desktop ≥ v0.20.3 (Bot Mode bundled default-on; a bot IS a Hermes profile
+with pinned provider/model; Agent-Inbox bot-to-bot messaging; group rooms
+2–6 bots; routines via Hermes cron; Camofox local mode = client-side
+anti-detection browser backend, no CDP — exactly the fork's
+`execution: "client"` Level-0 tool).
+
 directory, ~30 lines in `dispatchPrelude.ts`, one schema block, one route
 file, two registry type annotations) to keep rebases mechanical. Changelog
 fragments are intentionally not added to `changelog.d/` — this file is the

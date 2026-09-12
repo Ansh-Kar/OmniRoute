@@ -62,6 +62,7 @@
     "open-sse/services/harness/workflowMemory.ts",
     "src/app/api/v1/router/execution/route.ts",
     "src/app/api/v1/route/route.ts",
-    "tests/unit/services/harness-b16.test.ts"
+    "tests/unit/services/harness-b16.test.ts",
+    "src/app/api/v1/router/outcomes/route.ts"
   ]
 }

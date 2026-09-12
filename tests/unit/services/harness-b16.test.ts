@@ -33,6 +33,7 @@ import {
   getWorkflowHistory,
   recordWorkflowOutcome,
   workflowEvidence,
+  coerceWorkflowOutcome,
   workflowMemorySize,
 } from "../../../open-sse/services/harness/workflowMemory.ts";
 import { classifyFailure } from "../../../open-sse/services/harness/failureTaxonomy.ts";
@@ -246,4 +247,80 @@ test("taxonomy: tool failures never hurt model reputation", () => {
   });
   // A model-quality failure still counts.
   assert.deepEqual(classifyFailure("the synthesis missed two claims"), { kind: "model", affectsReputation: true });
+});
+
+// ── B16.1: Hermes guide §22.4 structured outcome callback ──────────────
+
+test("coerceWorkflowOutcome: valid payload, defaults and clamping", () => {
+  const ok = coerceWorkflowOutcome({
+    workflow: "web_research",
+    model: "model-x",
+    tools: ["camofox", "search"],
+    sources_found: 14,
+    sources_verified: 12,
+    quality_score: 1.7,
+    latency_ms: 38000,
+    success: true,
+  });
+  assert.ok(!("error" in ok));
+  if (!("error" in ok)) {
+    assert.strictEqual(ok.workflow, "web_research");
+    assert.strictEqual(ok.model, "model-x");
+    assert.deepStrictEqual(ok.tools, ["camofox", "search"]);
+    assert.strictEqual(ok.sourcesFound, 14);
+    assert.strictEqual(ok.sourcesVerified, 12);
+    assert.strictEqual(ok.qualityScore, 1); // clamped to 0..1
+    assert.strictEqual(ok.latencyMs, 38000);
+    assert.strictEqual(ok.success, true);
+  }
+  const minimal = coerceWorkflowOutcome({ workflow: "eval" });
+  assert.ok(!("error" in minimal));
+  if (!("error" in minimal)) {
+    assert.strictEqual(minimal.model, null);
+    assert.deepStrictEqual(minimal.tools, []);
+    assert.strictEqual(minimal.sourcesFound, null);
+    assert.strictEqual(minimal.success, null);
+  }
+});
+
+test("coerceWorkflowOutcome: rejects malformed payloads without throwing", () => {
+  for (const bad of [
+    null,
+    "x",
+    [],
+    {},
+    { workflow: "  " },
+    { workflow: "w", sources_found: -3 },
+    { workflow: "w", quality_score: "high" },
+    { workflow: "w", latency_ms: Number.NaN },
+  ]) {
+    const res = coerceWorkflowOutcome(bad);
+    assert.ok("error" in res, `expected error for ${JSON.stringify(bad)}`);
+  }
+});
+
+test("coerceWorkflowOutcome → recordWorkflowOutcome → getWorkflowHistory round-trip", () => {
+  clearWorkflowMemory();
+  const outcome = coerceWorkflowOutcome({
+    workflow: "web_research",
+    model: "model-y",
+    tools: ["camofox"],
+    sources_found: 8,
+    sources_verified: 7,
+    quality_score: 0.9,
+    latency_ms: 12000,
+    success: true,
+  });
+  assert.ok(!("error" in outcome));
+  if (!("error" in outcome)) {
+    recordWorkflowOutcome(outcome);
+    const history = getWorkflowHistory("web_research");
+    assert.strictEqual(history.length, 1);
+    assert.strictEqual(history[0].model, "model-y");
+    assert.strictEqual(history[0].attempts, 1);
+    assert.strictEqual(history[0].avgSourcesVerified, 7);
+  }
+  // a different workflow reads empty — memory is per-workflow
+  assert.strictEqual(getWorkflowHistory("other").length, 0);
+  clearWorkflowMemory();
 });

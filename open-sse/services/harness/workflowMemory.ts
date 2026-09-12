@@ -66,6 +66,46 @@ export function clearWorkflowMemory(): void {
   memory.clear();
 }
 
+/**
+ * B16.1: parse/validate an HTTP outcome payload (the Hermes integration
+ * guide §17/§22.4 structured outcome callback). Returns a WorkflowOutcome
+ * or a plain error string — never throws, never invents fields.
+ */
+export function coerceWorkflowOutcome(raw: unknown): WorkflowOutcome | { error: string } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { error: "body must be an object" };
+  }
+  const body = raw as Record<string, unknown>;
+  if (typeof body.workflow !== "string" || !body.workflow.trim()) {
+    return { error: "workflow (non-empty string) is required" };
+  }
+  const optionalNumber = (value: unknown): number | null | undefined => {
+    if (value === null || value === undefined) return null;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined; // invalid
+    return value;
+  };
+  const sourcesFound = optionalNumber(body.sources_found);
+  const sourcesVerified = optionalNumber(body.sources_verified);
+  const latencyMs = optionalNumber(body.latency_ms);
+  let qualityScore = optionalNumber(body.quality_score);
+  if (typeof qualityScore === "number") qualityScore = Math.max(0, Math.min(1, qualityScore));
+  if (sourcesFound === undefined || sourcesVerified === undefined || latencyMs === undefined || qualityScore === undefined) {
+    return { error: "numeric fields must be finite numbers >= 0 (quality_score in 0..1)" };
+  }
+  const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : null;
+  const tools = Array.isArray(body.tools) ? body.tools.filter((tool): tool is string => typeof tool === "string" && tool.trim().length > 0) : [];
+  return {
+    workflow: body.workflow.trim(),
+    model,
+    tools,
+    sourcesFound,
+    sourcesVerified,
+    qualityScore,
+    latencyMs,
+    success: body.success === true ? true : body.success === false ? false : null,
+  };
+}
+
 export function recordWorkflowOutcome(outcome: WorkflowOutcome): void {
   const workflow = outcome.workflow.trim().toLowerCase();
   if (!workflow) return;

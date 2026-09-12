@@ -572,3 +572,36 @@ subject.
 
 Gates: b16 10/10 · batch b1–b16+swarm 232/232 · harness tsc 0 (40 files) ·
 openapi 713/718 (99.3%).
+
+## B16.1 — The Hermes outcome callback (guide §22.4)
+
+**Trigger**: the user's Hermes-side integration guide (27 sections) — the
+executive-layer complement to the B16 routing guide. Research first: Bot
+Mode is real and is what the user thinks (NousResearch, MIT, bundled
+default-on since Desktop v0.20.3; a bot IS a Hermes profile with pinned
+provider/model, own memory/skills/tools; Agent Inbox bot-to-bot; group
+rooms 2–6 bots; routines via cron; Hindsight memory banks). Compliance
+review: guide boundaries match the fork exactly — §27 = B12's "routing
+engine is authority on relative model quality, Hermes decides IF/WHEN";
+§20 policy = HERMES_EXECUTION_RULE; §10 camofox = the B16 Level-0 ladder;
+§26 = agentRegistry modelAlias. §22 items 1–3 already shipped; item 4
+(structured outcome callback) was the one fork-side gap.
+
+**Build**: `coerceWorkflowOutcome` (pure validator, never invents fields —
+finite ≥ 0 numerics, quality clamped 0..1, optional success) +
+`GET/POST /v1/router/outcomes` (POST records into workflowMemory via
+`recordWorkflowOutcome` → 202; GET returns aggregated `WorkflowStat`
+history, best-evidence first). Hermes Bots execute client-side, so they
+report outcomes by callback — §26: OmniRoute selects the model, never
+orchestrates the research.
+
+**Scar**: `getWorkflowHistory` returns aggregated `WorkflowStat`
+(`attempts`, `avgSourcesVerified`, …), not raw outcomes — first test
+draft reached for `history[0].outcome.model` and hit TS2339. When the
+subject is an aggregate, assert aggregate fields.
+
+**Verification**: b16 suite 13/13 (three new: coerce valid/clamped,
+coerce rejects 8 malformed shapes, record→history round-trip);
+full services sweep 553/553 (superset of the usual batch — /work was
+wiped again this turn, so the recovered tree got the full directory run);
+tsc 0 @ 41 files; openapi 714/719 (99.3%).

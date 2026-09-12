@@ -379,6 +379,29 @@ curl -s -X POST "http://localhost:20128/v1/route" \
 # → {primary, secondary: […], fallback: […], confidence, task}   (?evidence=true adds the matrix)
 ```
 
+**B16.1 — the Hermes outcome callback.** Your Bots execute client-side, so
+their runs never cross the fork's closed loop. They close it themselves —
+the Hermes integration guide §17/§22.4 structured outcome callback:
+
+```bash
+curl -s -X POST "http://localhost:20128/v1/router/outcomes" \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"workflow": "web_research", "model": "sonnet-4.5", "tools": ["camofox"],
+       "sources_found": 14, "sources_verified": 12, "quality_score": 0.91,
+       "latency_ms": 38000, "success": true}'
+# → 202 {ok, recorded, workflow, memory_size}
+
+curl -s "http://localhost:20128/v1/router/outcomes?workflow=web_research" \
+  -H "Authorization: Bearer $KEY"
+# → {history: […aggregated WorkflowStat, best-evidence first]} — same evidence
+#   /v1/router/execution surfaces for agents and workflow_memory
+```
+
+Numeric fields are optional but must be finite ≥ 0 (`quality_score` clamps
+to 0..1); `success` optional boolean. Malformed payloads are rejected 400
+with the reason — never silently recorded. Workflow memory, never model
+benchmarks.
+
 ## 16. Layered capability router — `GET/POST /v1/router/candidates` (B12) + advisory profile & versioned registry (B13)
 
 The pipeline, explicitly:
