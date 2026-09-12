@@ -40,6 +40,8 @@ hidden, never forced onto a worse model.
 | `POST /v1/harness/classify` | Ask what the gateway would route a prompt as (debugging). |
 | `GET/POST /v1/router/candidates` | **Self-assessment.** Who can serve this task — including YOU, ranked by the identical score — plus the advisory task `profile` (specialist advantage, best available, self estimate), `registry` version, and staleness `guidance`. |
 | `POST /v1/router/refresh` | Force a registry refresh now (new models in, deprecated models deleted, version re-stamped). Cron/worker friendly. |
+| `GET/POST /v1/router/execution` | **Who/what can accomplish this?** The three-registry surface: task depth analysis, the tool-vs-agent-vs-model ladder, workflow evidence. |
+| `POST /v1/route` | The compact fast API: `{task}` → `{primary, secondary, fallback, confidence}` (`?evidence=true` adds the matrix). |
 | `GET /v1/models/best?task=code&limit=6` | See the ranked candidates for a category (never required). |
 
 ## 2. Submit an objective
@@ -163,6 +165,34 @@ model whose `ui_understanding` is high even when it's SECONDARY.
 
 The routing engine knows whether a model is "better than you" — you don't
 have to. Use it.
+
+### Execution routing: tools vs agents vs models (B16)
+
+Some needs aren't model needs at all. "Can browse" is an EXECUTION
+capability, not a model capability — Camofox and OpenWork are tools, not
+models, and they are never ranked against Qwen or DeepSeek. Ask
+`/v1/router/execution` "who/what can accomplish this?" and you get the
+ladder, as pure code:
+
+- **Fresh information + short/direct** → run the browser TOOL yourself
+  (Level-0: you + Camofox, no model delegation). A cheap lookup never
+  justifies a research agent.
+- **Long / parallelizable / multi-step / specialized** (a 20-source
+  research job) → escalate to the AGENT (web_research_agent:
+  research-model + camofox + openwork). Browsing turned into research.
+- **Everything else** → model routing by capability evidence
+  (`/v1/router/candidates`).
+
+The standing rule, verbatim: *Tools are preferred for short, direct
+operations. Agents are preferred for extended, parallelizable,
+specialized, or multi-step operations. Models are selected based on
+task-specific capability evidence. Self-execution is preferred when
+expected quality is sufficient and delegation cost is not justified.*
+
+Tools marked `execution: "client"` run in YOUR runtime — the registry
+advises, you execute. Agents carry WORKFLOW evidence (sources found and
+verified, synthesis quality, latency per model+tools combination), which
+no benchmark leaderboard contains.
 
 ### The delegation gate + the fast path (B15)
 

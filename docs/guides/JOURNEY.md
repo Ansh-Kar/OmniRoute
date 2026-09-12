@@ -525,3 +525,50 @@ runner records `dispatchModel` (the assignment target), not outcome.model.
 
 Gates: b15 9/9 · batch b1–b15+swarm 222/222 · harness tsc 0 (34 files) ·
 openapi 99.3% (711/716).
+
+## B16 — The three-registry separation (tools, agents, models)
+
+**User's spec**: separate model routing from tool/agent routing — "can
+browse" is an execution capability, not a model capability. Three
+registries (model / tool / agent). Hermes asks "who/what can accomplish
+web research?", not "which model can browse?". Camofox direct to Hermes =
+the cheap Level-0 browsing path; web-research agents = escalation when
+browsing turns into research. Task depth (requires_fresh_information,
+duration_estimate, parallelizable) drives a pure-code ladder. Web quality
+is a workflow property — measure workflows, not model benchmarks. The
+attached routing guide (20 sections, committed verbatim) confirmed
+phases 1–8 already shipped and set phases 9–10 as this build.
+
+**What shipped**: toolRegistry (camofox/openwork client-side, web_search
+native; execution: native|client|external — the fork never implements
+tool runtimes, Hermes bot mode has them), agentRegistry
+(web_research_agent), executionRouter (the ladder + the Hermes rule
+verbatim + task depth), workflowMemory (per-(workflow, model, tools)
+outcomes: sources_found/verified, quality, latency), GET/POST
+/v1/router/execution (the who/what surface), POST /v1/route (guide §10
+compact API), TOOL_FAILURE taxonomy kind.
+
+**Decisions**:
+- The registries are SEPARATE by construction: tools match by capability
+  superset, agents by capability, models by unified score — no cross-
+  registry ranking exists to get wrong.
+- execution: "client" is a first-class availability: the router ADVISES
+  ("run camofox yourself"), Hermes executes. Rebuilding tools server-side
+  would violate guide §16 twice over (runtime + scope).
+- The ladder defaults to browser-tool Level-0 only for short/direct work;
+  parallelizable research escalates to the agent even when each step is
+  fast — the user's "20-source research job" distinction.
+- Workflow evidence is zeroed when absent (never invented) and ranked by
+  quality × log(attempts) — evidence volume matters.
+- The `intelligent` combo strategy (guide §2) deferred to B17: it touches
+  the upstream combo engine, validation schemas, and UI constants —
+  harness-check cannot see that surface, so it needs a contained build
+  with the full typecheck.
+
+**Scars**: two consecutive arithmetic miscounts in the workflow-memory
+test (3 outcomes = 2 keys; history length is per-key) — the second only
+surfaced after the first fix; count keys, not records, when a map is the
+subject.
+
+Gates: b16 10/10 · batch b1–b16+swarm 232/232 · harness tsc 0 (40 files) ·
+openapi 713/718 (99.3%).

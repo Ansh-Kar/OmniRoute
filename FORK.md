@@ -659,6 +659,61 @@ invalidation/TTL/prune, runner wiring e2e: done records success, bare
 error invalidates, infra error keeps). Combined batch b1–b15+swarm 222/222;
 harness tsc 0 errors (34 files).
 
+### 5r. B16 — The three-registry separation: tools, agents, models + execution routing (`feat(harness)`)
+
+The user's spec: "Camofox isn't a model. OpenWork isn't a model. They're
+execution environments/tools. So don't put them in the same ranking system
+as Qwen, DeepSeek, etc." — plus the attached routing guide (committed
+verbatim: `docs/guides/OmniRoute_Revised_Intelligent_Routing_Guide.md`;
+phases 1–8 were already B12/B13/B15).
+
+- **`toolRegistry.ts`** (pure): execution environments with capability
+  metadata — camofox (browser/web_navigation/javascript, execution:
+  client — Hermes bot mode runs it), openwork (web_research/browser,
+  client), web_search (native, POST /v1/search). Superset capability
+  matching with overlap ranking; `execution: native|client|external`
+  marks WHO runs it — the fork NEVER implements tool runtimes (guide §16;
+  "Hermes bot mode saves us from rebuilding tools").
+- **`agentRegistry.ts`** (pure): model + tools + capabilities — the
+  escalation path (web_research_agent: research alias, camofox+openwork,
+  web_research/source_verification/synthesis). Matched by capability,
+  never by model axes.
+- **`executionRouter.ts`** (pure): the user's ladder as pure code —
+  fresh information? → can the executor browse directly? → short/direct
+  = **Level-0 TOOL** (Hermes + camofox, no model delegation) vs
+  long/parallelizable/multi-step = **AGENT** escalation ("this isn't a
+  browsing operation; this is a 20-source research job"); no fresh info →
+  MODEL routing. `HERMES_EXECUTION_RULE` verbatim: "Tools are preferred
+  for short, direct operations. Agents are preferred for extended,
+  parallelizable, specialized, or multi-step operations. Models are
+  selected based on task-specific capability evidence. Self-execution is
+  preferred when expected quality is sufficient and delegation cost is
+  not justified." Task depth on the profile: duration_estimate,
+  requires_fresh_information, parallelizable.
+- **`workflowMemory.ts`** (pure, guide §14): web quality is a WORKFLOW
+  property (model × browsing × strategy × verification × synthesis) —
+  outcomes recorded per (workflow, model, tools): sources_found,
+  sources_verified, quality_score, latency. §15 interfaces
+  (recordWorkflowOutcome/getWorkflowHistory/workflowEvidence) — "that's
+  information you won't find on a benchmark leaderboard."
+- **`GET/POST /v1/router/execution`**: the "who/what can accomplish
+  this?" surface — analysis + decision ladder + matched tools + agents
+  (with workflow evidence) + top-3 models, all advisory.
+- **`POST /v1/route`** (guide §10, Phase 10): the compact fast API —
+  {task} → {primary, secondary[], fallback[], confidence} (+?evidence=true
+  matrix). Thin: same filter+ranking, none of the verbosity.
+- **`TOOL_FAILURE`** in the failure taxonomy (guide §12): tool/browser
+  crashes never hurt a model's reputation.
+
+Tests: `tests/unit/services/harness-b16.test.ts` (10 — tool superset
+matching + execution kinds, agent capability matching, task-depth profile,
+the ladder's four outcomes incl. Level-0/escalation/degenerates, the rule
+verbatim, workflow aggregation + ranking + zeroed-never-invented evidence
++ dedup, agents-with-evidence wiring, TOOL_FAILURE). Combined batch
+b1–b16+swarm 232/232; harness tsc 0 errors (40 files); openapi 713/718
+(99.3%). Deferred to B17: the `intelligent` combo strategy (guide §2 —
+upstream combo-engine surgery, needs its own contained build).
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

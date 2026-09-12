@@ -14019,6 +14019,76 @@ paths:
         "401":
           description: Missing or invalid API key.
 
+  /api/v1/router/execution:
+    get:
+      tags: [Harness]
+      summary: "Execution routing: tools vs agents vs models (B16)"
+      description: >-
+        The three-registry surface — Hermes asks "who/what can accomplish
+        this?" and gets the execution profile (task depth: fresh
+        information, duration estimate, parallelizable), the pure-code
+        decision ladder (fresh info + short/direct -> Level-0 tool;
+        long/parallelizable -> agent escalation; otherwise model routing),
+        capability-matched tools (never ranked against models) and agents
+        (with workflow memory evidence), plus the top-3 models. Params:
+        prompt/task, task_type, modality, complexity, parallelizable,
+        requires_fresh_information, use_embeddings, embedding_model.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: "advisory, rule, analysis, decision, tools, agents, models, workflow_memory."
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      tags: [Harness]
+      summary: "Execution routing (POST — long prompts)"
+      description: Same surface as GET, JSON body.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: "advisory, rule, analysis, decision, tools, agents, models, workflow_memory."
+        "400":
+          description: Invalid body.
+
+  /api/v1/route:
+    post:
+      tags: [Harness]
+      summary: "Fast Routing API — compact candidate set (B16, guide §10)"
+      description: >-
+        The compact interface: {task, modalities?, capabilities?,
+        complexity?, min_context?, evidence?} -> {primary, secondary[],
+        fallback[], confidence, task}. Confidence is the primary's unified
+        score. ?evidence=true adds the compact matrix; full per-dimension
+        breakdowns stay on /v1/router/candidates. Avoids returning the
+        entire registry by default.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: "primary, secondary, fallback, confidence, task (+evidence)."
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Body lacks a task.
+
 components:
   securitySchemes:
     BearerAuth:

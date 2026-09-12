@@ -345,7 +345,41 @@ The candidates response now carries the whole decision kit:
   never reads as 'Qwen is bad at OCR'." Bare failures (no infra evidence)
   still count — the closed loop stays honest.
 
-## 14. Layered capability router — `GET/POST /v1/router/candidates` (B12) + advisory profile & versioned registry (B13)
+## 15. Execution routing — `GET/POST /v1/router/execution` + `POST /v1/route` (B16)
+
+Three registries, never mixed: **models** (capability evidence, unified
+score), **tools** (execution environments — camofox, openwork, native
+web_search), **agents** (model + tools + capabilities — the escalation
+path). Hermes asks "who/what can accomplish web research?":
+
+```bash
+curl -s -X POST "http://localhost:20128/v1/router/execution" \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"prompt": "research 15 competing projects and verify claims against primary sources", "parallelizable": true}'
+```
+
+→ `{analysis: {requires_fresh_information, duration_estimate,
+parallelizable, …}, decision: {path: tool|agent|model, tool?, agent?,
+reason, ladder}, tools: […], agents: [… with workflow evidence],
+models: {primary, secondary, fallback, matrix}, workflow_memory: […],
+rule}`. The ladder is pure code: fresh info + short/direct → **Level-0
+tool** (browse yourself, no model delegation); long/parallelizable/
+multi-step → **agent escalation**; otherwise model routing. Tools marked
+`execution: "client"` run in YOUR runtime (bot mode) — OmniRoute advises,
+never executes them. Web quality is measured as WORKFLOW outcomes
+(sources found/verified, synthesis quality, latency) per
+(workflow, model, tools) — not model benchmarks.
+
+The compact fast API (routing guide §10):
+
+```bash
+curl -s -X POST "http://localhost:20128/v1/route" \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"task": "read this screenshot and explain the UI problem", "modalities": ["image"]}'
+# → {primary, secondary: […], fallback: […], confidence, task}   (?evidence=true adds the matrix)
+```
+
+## 16. Layered capability router — `GET/POST /v1/router/candidates` (B12) + advisory profile & versioned registry (B13)
 
 The pipeline, explicitly:
 

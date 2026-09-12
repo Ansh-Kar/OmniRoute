@@ -16,9 +16,9 @@
  *
  *   Model Memory   — reputation-affecting failures (kind "model")
  *   Task Memory    — per-signature outcomes (routingCache.ts)
- *   Failure Memory — excused failures (everything else), tracked as
- *                    ModelStat.infraFailures for visibility, never fed to
- *                    laplace/health scoring
+ *   Failure Memory — excused failures (everything else, incl. guide §12
+ *                    TOOL_FAILURE), tracked as ModelStat.infraFailures for
+ *                    visibility, never fed to laplace/health scoring
  */
 
 export type FailureKind =
@@ -27,7 +27,8 @@ export type FailureKind =
   | "context_too_large"
   | "malformed_request"
   | "infrastructure"
-  | "budget";
+  | "budget"
+  | "tool_failure";
 
 export type FailureClassification = {
   kind: FailureKind;
@@ -40,6 +41,9 @@ const FAILURE_PATTERNS: Array<{ kind: FailureKind; pattern: RegExp }> = [
   // Budget/deadline sweeps are PLANNING failures: the task never ran (or
   // the job ran out of runway) — nothing the serving model did.
   { kind: "budget", pattern: /\b(budget exhausted|max_total_tokens|deadline exceeded|job deadline)\b/i },
+  // Guide §12 TOOL_FAILURE: the execution environment failed (browser
+  // crashed, tool errored) — never the serving model's reputation.
+  { kind: "tool_failure", pattern: /\b(tool[_ ]?(failure|error|crashed)|browser (crashed|failed)|camofox|openwork|playwright|selenium)\b/i },
   { kind: "timeout", pattern: /\b(timeout|timed out|ETIMEDOUT|abort(ed)? on (timeout|deadline)|request deadline)\b/i },
   {
     kind: "context_too_large",
