@@ -30,6 +30,13 @@ export type ModelStat = {
   successes: number;
   /** Terminal task failures (state failed). */
   failures: number;
+  /**
+   * B15 failure taxonomy: failures EXCUSED from reputation (timeout,
+   * context limit, malformed request, infra, budget) — the failure
+   * memory. Sparse: present only when > 0. Laplace/health consumers use
+   * failures − infraFailures (reputation failures only).
+   */
+  infraFailures?: number;
   /** Sum of recorded latencies (ms) over successful tasks. */
   totalLatencyMs: number;
   /**
@@ -47,8 +54,13 @@ export type ModelStat = {
  * (0.5 + 0.5 × health) shape: unknown ⇒ ×0.75 multiplier for everyone.
  */
 export function healthFromStat(stat: ModelStat | undefined): number {
-  if (!stat || stat.successes + stat.failures === 0) return 0.5;
-  return (stat.successes + 1) / (stat.successes + stat.failures + 2);
+  // B15: infra failures (timeouts, provider outages, …) never hurt
+  // health — the breaker (B9) owns provider-level failure; the model's
+  // task reputation only counts what the model actually did wrong.
+  if (!stat) return 0.5;
+  const reputation = Math.max(0, stat.failures - (stat.infraFailures ?? 0));
+  if (stat.successes + reputation === 0) return 0.5;
+  return (stat.successes + 1) / (stat.successes + reputation + 2);
 }
 
 /** Latency (ms) a model must beat to score speed = 1. Tunable prior. */

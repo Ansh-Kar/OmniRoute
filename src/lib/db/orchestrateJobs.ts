@@ -13,6 +13,7 @@
  */
 
 import { getDbInstance } from "./core";
+import { classifyFailure } from "@omniroute/open-sse/services/harness/failureTaxonomy.ts";
 import type {
   JobStatus,
   JudgeDriftResult,
@@ -183,20 +184,20 @@ function jobFromRow(row: any, tasks: OrchestrateTask[], log: OrchestrateLogEntry
  */
 const RUNTIME_STATS_WINDOW_MS = 30 * 24 * 60 * 60 * 1000; // 30d
 
-function allTerminalTaskRows(): Array<{ model: string; tag: string; state: string; latency: number | null }> {
+function allTerminalTaskRows(): Array<{ model: string; tag: string; state: string; latency: number | null; lastError: string | null }> {
   ensureOrchestrateTables();
   const db = getDbInstance();
   const cutoff = Date.now() - RUNTIME_STATS_WINDOW_MS;
   return (
     db
       .prepare(
-        `SELECT assigned_model AS model, tag AS tag, state AS state, latency_ms AS latency
+        `SELECT assigned_model AS model, tag AS tag, state AS state, latency_ms AS latency, last_error AS lastError
          FROM orchestrate_tasks
          WHERE assigned_model IS NOT NULL AND assigned_model != ''
            AND state IN ('done', 'failed')
            AND (finished_at IS NULL OR finished_at >= ?)`
       )
-      .all(cutoff) as Array<{ model: string; tag: string; state: string; latency: number | null }>
+      .all(cutoff) as Array<{ model: string; tag: string; state: string; latency: number | null; lastError: string | null }>
   );
 }
 
@@ -209,15 +210,15 @@ function percentile(sorted: number[], p: number): number | null {
 
 /** Aggregate terminal rows into ModelStat (+ p50/p95), grouped as asked. */
 function windowedTaskStats(
-  rows: Array<{ model: string; tag: string; state: string; latency: number | null }>,
+  rows: Array<{ model: string; tag: string; state: string; latency: number | null; lastError: string | null }>,
   byTag: string | null
 ): Record<string, ModelStat> {
-  const groups = new Map<string, { successes: number; failures: number; totalLatencyMs: number; latencies: number[] }>();
+  const groups = new Map<string, { successes: number; failures: number; infraFailures: number; totalLatencyMs: number; latencies: number[] }>();
   for (const row of rows) {
     const key = byTag === "tag" ? `${row.model}|${row.tag}` : row.model;
     let group = groups.get(key);
     if (!group) {
-      group = { successes: 0, failures: 0, totalLatencyMs: 0, latencies: [] };
+      group = { successes: 0, failures: 0, infraFailures: 0, totalLatencyMs: 0, latencies: [] };
       groups.set(key, group);
     }
     if (row.state === "done") {
@@ -227,6 +228,9 @@ function windowedTaskStats(
       group.latencies.push(latency);
     } else if (row.state === "failed") {
       group.failures += 1;
+      // B15 failure taxonomy: excused failures counted separately, never
+      // fed to laplace/health (an outage ≠ bad at the task).
+      if (!classifyFailure(row.lastError).affectsReputation) group.infraFailures += 1;
     }
   }
   const stats: Record<string, ModelStat> = {};
@@ -235,6 +239,7 @@ function windowedTaskStats(
     stats[key] = {
       successes: group.successes,
       failures: group.failures,
+      ...(group.infraFailures > 0 ? { infraFailures: group.infraFailures } : {}),
       totalLatencyMs: group.totalLatencyMs,
       p50LatencyMs: percentile(sorted, 50),
       p95LatencyMs: percentile(sorted, 95),

@@ -318,7 +318,34 @@ you which stage answered) and `GET/POST /v1/router/candidates` (the
 `task.type` behind the advisory profile may now come from embeddings).
 `/quick` and `/plan` intentionally stay stage-1-only — latency paths.
 
-## 13. Layered capability router — `GET/POST /v1/router/candidates` (B12) + advisory profile & versioned registry (B13)
+## 13. Decision layer on the router (B15): threshold, matrix, cache, failure memory
+
+The candidates response now carries the whole decision kit:
+
+- **`delegation`** — the anti-inflation gate, pure code (no LLM):
+  `specialist advantage < threshold (default 5 pts) → self; ≥ → delegate`.
+  91-vs-93 → self (not worth a round-trip); 72-vs-96 → delegate. Filtered
+  callers get `delegate` (a fact); unregistered/no-caller get `consider`.
+  Override the threshold with `delegation_threshold` (points). Advisory —
+  Hermes stays sovereign.
+- **`matrix`** — the compact representation: every candidate in ONE line
+  (`P1 a/qwen-vl  vision 94 | hist 92% | p50 — | $0.40/M`), tier-marked,
+  the caller tagged `←you`. A few hundred tokens for the whole field; the
+  full `candidates` array remains for digging in.
+- **`cache`** — `task_signature → preferred model` with outcome memory.
+  A hit means "known task — you may take this model without re-reasoning";
+  `success_rate` is the signature's observed history. Reputation failures
+  on the cached model drop the entry (the next consultation routes
+  fully); infra failures are recorded but kept. The runner feeds outcomes
+  back automatically (every orchestrate task completion).
+- **Failure memory** — timeouts, provider outages, context overflows,
+  malformed requests, and budget sweeps are counted as `infraFailures`
+  and EXCUSED from reputation. Reliability, historical success, and
+  allocator health score reputation failures only: "a provider outage
+  never reads as 'Qwen is bad at OCR'." Bare failures (no infra evidence)
+  still count — the closed loop stays honest.
+
+## 14. Layered capability router — `GET/POST /v1/router/candidates` (B12) + advisory profile & versioned registry (B13)
 
 The pipeline, explicitly:
 

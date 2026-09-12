@@ -610,6 +610,55 @@ body-shape never embed, throwing embed, per-model centroid caching + text
 LRU call counts, model-race guard). Combined batch b1–b14+swarm 213/213;
 harness tsc 0 errors (29 files).
 
+### 5q. B15 — The decision layer: failure taxonomy, delegation threshold, candidate matrix, routing cache (`feat(harness)`)
+
+The user's decision-layer spec: two kinds of model knowledge (registry
+facts vs workflow memory — both shipped B12/B13), plus four new pieces.
+
+- **Failure taxonomy** (`failureTaxonomy.ts`, pure): classifies terminal
+  failures as model / timeout / context_too_large / malformed_request /
+  infrastructure / budget — EVIDENCE-BASED EXCLUSION: only detectable
+  non-model failures are excused; a bare failure after exhausting attempts
+  is still a quality signal (closed-loop semantics preserved). Both
+  stores aggregate `infraFailures` (sparse, the failure memory); every
+  laplace/health consumer (descriptor reliability, allocator health,
+  provenance internal) scores on reputation failures only. The e2e proves
+  ten TIMEOUT failures do NOT flip a real allocation while ten bare
+  failures still do — "a provider outage never reads as 'Qwen is bad at
+  OCR'".
+- **Delegation gate** (`delegationGate.ts`, pure): the anti-model-call-
+  inflation rule — `specialist advantage < DELEGATION_THRESHOLD (default 5
+  pts) → self`. The user's exact cases are tests: 91-vs-93 → self, 72-vs-96
+  → delegate. Filtered callers → delegate (a fact, not advice);
+  unregistered/no-caller → consider. Pure code, zero LLM — the boundary
+  between "I can do it" and "delegate" is extremely cheap. Advisory:
+  `delegation: {recommendation, advantage, threshold, signals, reason}` on
+  the candidates response; Hermes stays sovereign.
+- **Compact candidate matrix** (`candidateMatrixLines`): every ranked
+  candidate as ONE line — `"P1 a/qwen-vl  vision 94 | hist 92% | p50 — |
+  $0.40/M"` — tier-marked, self-tagged ("←you"), ≤ ~90 chars/line. Hermes
+  sees the whole field in a few hundred tokens; the full `candidates`
+  array stays for digging in.
+- **Routing decision cache** (`routingCache.ts`, pure): task_signature
+  (type|modality|specialization|complexity, normalized) → preferred model,
+  6h TTL, LRU 256, per-signature outcome memory (attempts/successes — the
+  Task Memory). The candidates response leads with `cache: {hit, model,
+  uses, success_rate}` so a known task can skip re-reasoning. The RUNNER
+  feeds outcomes back (wave + stream paths, `dispatchModel` captured for
+  error outcomes that carry no model): a reputation failure on the cached
+  model DROPS the entry ("route immediately"); infra failures are recorded
+  but kept. `pruneRoutingCache` drops models the registry rebuild deleted.
+
+Tests: `tests/unit/services/harness-b15.test.ts` (9 — taxonomy kinds +
+reputationFailures clamping, sparse infraFailures + reliability excusal
+incl. pure-infra neutral, the no-flip e2e with the bare-failure
+counterfactual, the gate's exact bands (91/93, 72/96, would_win, filtered,
+unregistered, threshold override), matrix line format + self tag +
+compactness bound, signature normalization, cache record/hit/uses/outcomes/
+invalidation/TTL/prune, runner wiring e2e: done records success, bare
+error invalidates, infra error keeps). Combined batch b1–b15+swarm 222/222;
+harness tsc 0 errors (34 files).
+
 ### 6. Transport: concurrent proxy dispatcher streams (already upstream)
 
 PR [#4288](https://github.com/diegosouzapw/OmniRoute/pull/4288)

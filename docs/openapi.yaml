@@ -13990,7 +13990,7 @@ paths:
               type: object
       responses:
         "200":
-          description: "advisory, guidance, registry, profile (domain/complexity/input + specialist advantage + best available + self estimate), task, filter, tiers, candidates, self."
+          description: "advisory, guidance, registry, profile, delegation (threshold gate: self|delegate|consider), matrix (compact per-candidate lines), cache (task_signature -> preferred model + outcomes), task, filter, tiers, candidates, self."
           content:
             application/json:
               schema:

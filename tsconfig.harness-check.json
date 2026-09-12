@@ -51,6 +51,10 @@
     "src/lib/harness/selfFetch.ts",
     "src/lib/harness/embedder.ts",
     "src/app/api/v1/harness/classify/route.ts",
-    "tests/unit/services/harness-b14.test.ts"
+    "tests/unit/services/harness-b14.test.ts",
+    "open-sse/services/harness/failureTaxonomy.ts",
+    "open-sse/services/harness/delegationGate.ts",
+    "open-sse/services/harness/routingCache.ts",
+    "tests/unit/services/harness-b15.test.ts"
   ]
 }

@@ -34,6 +34,8 @@ import {
   TASK_TYPE_TO_QUERY,
   type TaskType,
 } from "../modelTags/index.ts";
+import { classifyFailure } from "./failureTaxonomy.ts";
+import { recordRoutingOutcome, taskSignature } from "./routingCache.ts";
 
 // Re-exported for the stores and dispatch wiring (B10: the SQLite store and
 // lib/orchestrator/dispatch.ts import the tag vocabulary from here).
@@ -836,7 +838,7 @@ function inMemoryTaskStats(
   byTag: string | null
 ): Record<string, ModelStat> {
   const cutoff = Date.now() - IN_MEMORY_STATS_WINDOW_MS;
-  const groups = new Map<string, { successes: number; failures: number; totalLatencyMs: number; latencies: number[] }>();
+  const groups = new Map<string, { successes: number; failures: number; infraFailures: number; totalLatencyMs: number; latencies: number[] }>();
   for (const job of jobs) {
     for (const task of job.tasks) {
       if (!task.assignedModel) continue;
@@ -845,7 +847,7 @@ function inMemoryTaskStats(
       const key = byTag === "tag" ? `${task.assignedModel}|${task.tag}` : task.assignedModel;
       let group = groups.get(key);
       if (!group) {
-        group = { successes: 0, failures: 0, totalLatencyMs: 0, latencies: [] };
+        group = { successes: 0, failures: 0, infraFailures: 0, totalLatencyMs: 0, latencies: [] };
         groups.set(key, group);
       }
       if (task.state === "done") {
@@ -855,6 +857,10 @@ function inMemoryTaskStats(
         group.latencies.push(latency);
       } else {
         group.failures += 1;
+        // B15: routing/infra failures (timeout, provider outage, …) are
+        // counted but excused from reputation — an outage must never read
+        // as "this model is bad at the task".
+        if (!classifyFailure(task.lastError).affectsReputation) group.infraFailures += 1;
       }
     }
   }
@@ -864,6 +870,7 @@ function inMemoryTaskStats(
     stats[key] = {
       successes: group.successes,
       failures: group.failures,
+      ...(group.infraFailures > 0 ? { infraFailures: group.infraFailures } : {}),
       totalLatencyMs: group.totalLatencyMs,
       p50LatencyMs: inMemoryPercentile(sorted, 50),
       p95LatencyMs: inMemoryPercentile(sorted, 95),
@@ -1495,6 +1502,9 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
           }
         }
 
+        // B15: the model this dispatch targets (outcome.model is absent on
+        // errors — the routing cache still needs to know who failed).
+        const dispatchModel = assignment?.candidate.model ?? biasAvoidModel ?? null;
         let outcome: Awaited<ReturnType<TaskDispatch>>;
         try {
           outcome = await dispatch({
@@ -1502,7 +1512,7 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
             tag: task.tag,
             modality,
             alias,
-            assignedModel: assignment?.candidate.model ?? biasAvoidModel ?? null,
+            assignedModel: dispatchModel,
             messages: [{ role: "user", content: prompt }],
             prompt,
             timeoutMs: current.policy.task_timeout_ms,
@@ -1558,12 +1568,23 @@ async function runWaves(jobId: string, deps: RunnerDeps, log: LogFn): Promise<vo
               completionTokens: usage ? usage.completion_tokens : null,
             })
           );
+          // B15: feed the routing cache's task-conditioned memory.
+          recordRoutingOutcome(taskSignature({ type: task.tag, modality: task.modality }), outcome.model ?? dispatchModel, true, true);
           log(taskId, "task_done", `${latency}ms via ${outcome.model ?? alias}`);
         } else {
           const attempts = task.attempts + 1;
           if (attempts >= current.policy.max_attempts) {
             await Promise.resolve(
               store.writeTaskTransition(jobId, taskId, { state: "failed", attempts, wave, lastError: outcome.error })
+            );
+            // B15: a reputation failure invalidates the cached routing
+            // decision (route immediately next time); infra failures are
+            // recorded but kept — the model choice wasn't wrong.
+            recordRoutingOutcome(
+              taskSignature({ type: task.tag, modality: task.modality }),
+              dispatchModel,
+              false,
+              classifyFailure(outcome.error).affectsReputation
             );
             log(taskId, "task_failed", `attempts exhausted (${attempts}): ${outcome.error}`);
           } else {
@@ -1841,6 +1862,9 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
             }
           }
 
+          // B15: the model this dispatch targets (outcome.model is absent
+          // on errors — the routing cache still needs to know who failed).
+          const dispatchModel = assignment?.candidate.model ?? biasAvoidModel ?? null;
           let outcome: Awaited<ReturnType<TaskDispatch>>;
           try {
             outcome = await dispatch({
@@ -1848,7 +1872,7 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
               tag: task.tag,
               modality,
               alias,
-              assignedModel: assignment?.candidate.model ?? biasAvoidModel,
+              assignedModel: dispatchModel,
               messages: [{ role: "user", content: prompt }],
               prompt,
               timeoutMs: current.policy.task_timeout_ms,
@@ -1895,6 +1919,7 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
                 completionTokens: usage ? usage.completion_tokens : null,
               })
             );
+            recordRoutingOutcome(taskSignature({ type: task.tag, modality: task.modality }), outcome.model ?? dispatchModel, true, true);
             log(taskId, "task_done", `${latency}ms via ${outcome.model ?? alias}`);
             await onCompletion(taskId, outcome.text);
           } else {
@@ -1902,6 +1927,14 @@ async function runStream(jobId: string, deps: RunnerDeps, log: LogFn): Promise<v
             if (attempts >= current.policy.max_attempts) {
               await Promise.resolve(
                 store.writeTaskTransition(jobId, taskId, { state: "failed", attempts, wave: dispatchOrdinal, lastError: outcome.error })
+              );
+              // B15: reputation failure invalidates the cached routing
+              // decision; infra failures are recorded but kept.
+              recordRoutingOutcome(
+                taskSignature({ type: task.tag, modality: task.modality }),
+                dispatchModel,
+                false,
+                classifyFailure(outcome.error).affectsReputation
               );
               log(taskId, "task_failed", `attempts exhausted (${attempts}): ${outcome.error}`);
             } else {

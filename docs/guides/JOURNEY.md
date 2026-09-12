@@ -472,3 +472,56 @@ assertions mislabeled the runner-up on the first run.
 
 Gates: b14 12/12 · batch b1–b14+swarm 213/213 · harness tsc 0 (29 files) ·
 openapi 99.3% (711/716).
+
+## B15 — The decision layer (failure taxonomy, delegation threshold, candidate matrix, routing cache)
+
+**User's spec**: two kinds of model knowledge (static registry facts vs
+accumulated workflow memory — "Qwen benchmarks well for OCR, and in our
+previous workflows it has been reliable for screenshots"); the
+recommendation is never the decision (Hermes sovereign); the self/delegate
+boundary must be pure code and extremely cheap; a compact candidate matrix
+(a few hundred tokens, not 12 × 3k); a delegation threshold against
+model-call inflation; cached routing decisions with a fast path; routing
+failure distinguished from model failure; three memories (model / task /
+failure). The deterministic evaluator ("OCR → fields present, code → tests
+pass, JSON → schema valid") is queued as B16.
+
+**What shipped**: failureTaxonomy.ts (evidence-based exclusion; sparse
+infraFailures on ModelStat; every laplace/health consumer scores
+reputation failures only); delegationGate.ts (advantage < threshold →
+self, default 5 pts; filtered → delegate; unregistered → consider);
+candidateMatrixLines (one line per candidate, tier-marked, self-tagged);
+routingCache.ts (signature → model, 6h TTL, outcome memory, reputation-
+failure invalidation, infra-failure retention, registry-prune hook) fed by
+the runner (wave + stream; dispatchModel captured because error outcomes
+carry no model); candidates response gains delegation + matrix + cache.
+
+**Decisions**:
+- Evidence-based EXCLUSION, not evidence-based attribution: no infra
+  evidence in the error → the failure belongs to the model. This keeps the
+  b12 closed loop exactly as strong for real quality failures while
+  excusing detectable transport noise. A vague error punishing a model
+  would be worse than the disease.
+- The gate is advisory with teeth: incapable is a fact; below-threshold is
+  strong advice ("not worth a round-trip"); above-threshold says
+  "consider". Hermes can always override — but the default stops
+  model-call inflation.
+- A cache HIT is a use (the first getCachedDecision returns uses: 1).
+- Infra failures keep the cached entry: the CHOICE wasn't wrong, the
+  transport was — dropping it would amplify an outage into a routing
+  change (exactly what the taxonomy exists to prevent).
+- The no-flip e2e needed care: m2's SUCCESSES are legitimate positive
+  evidence and may win on their own; the clean assertion is m1's own
+  reputation untouched (timeouts) vs flipped (bare) in the same test.
+
+**Scars**: a silent python-replace miss left the wave failed-branch
+without outcome recording — the runner-wiring test caught it because
+attempts stayed 0 (the fourth recordRoutingOutcome site only existed on
+paper). Silent replaces need a site-count assertion, not trust. Also:
+file named decisionGate.ts while every import said delegationGate.ts —
+TS2307 "cannot find module" that looked like a resolution problem for
+three attempts; and error-shaped dispatch outcomes carry NO model — the
+runner records `dispatchModel` (the assignment target), not outcome.model.
+
+Gates: b15 9/9 · batch b1–b15+swarm 222/222 · harness tsc 0 (34 files) ·
+openapi 99.3% (711/716).

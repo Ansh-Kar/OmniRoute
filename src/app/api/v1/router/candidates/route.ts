@@ -6,6 +6,7 @@ import { classifyRequest } from "@omniroute/open-sse/services/harness/classifier
 import { makeSelfFetchEmbedder } from "@/lib/harness/embedder";
 import {
   buildModelDescriptors,
+  candidateMatrixLines,
   ensureRegistryFresh,
   filterCandidates,
   rankCandidates,
@@ -16,6 +17,13 @@ import {
   taskProfile,
   type CandidateFilter,
 } from "@omniroute/open-sse/services/harness/capabilityRegistry.ts";
+import { delegationGate, type TaskSignals } from "@omniroute/open-sse/services/harness/delegationGate.ts";
+import {
+  getCachedDecision,
+  pruneRoutingCache,
+  recordRoutingDecision,
+  taskSignature,
+} from "@omniroute/open-sse/services/harness/routingCache.ts";
 
 /**
  * GET/POST /api/v1/router/candidates — B12, the layered capability router's
@@ -129,6 +137,51 @@ async function handle(request: NextRequest, body: Record<string, unknown> | null
     self
   );
 
+  // B15 — the decision layer, all pure code (no LLM in the fast path):
+  //  1. routing cache: task_signature → preferred model (the fast path
+  //     Hermes can take without re-reasoning; outcomes feed back from the
+  //     runner and reputation failures invalidate entries);
+  //  2. the compact candidate matrix: every candidate in a few hundred
+  //     tokens (the full `candidates` array remains for digging in);
+  //  3. the delegation gate: specialist advantage vs a hard threshold —
+  //     the anti-model-call-inflation rule. Advisory; Hermes stays
+  //     sovereign.
+  const signature = taskSignature({
+    type: taskType ?? null,
+    modality: (requestedModality ?? taskModality) ?? null,
+    specialization: specialization ?? null,
+    complexity,
+  });
+  pruneRoutingCache(new Set(descriptors.map((d) => d.id)));
+  let cacheHit = getCachedDecision(signature);
+  const primary = ranked[0];
+  if (!cacheHit && primary) {
+    recordRoutingDecision(signature, { model: primary.descriptor.id, provider: primary.descriptor.provider, score: primary.score });
+    cacheHit = getCachedDecision(signature);
+  }
+  const matrix = candidateMatrixLines(ranked, {
+    category: category ?? taskType ?? undefined,
+    selfModel: callerModel,
+  });
+  const signals: TaskSignals = {
+    complexity,
+    modality: (requestedModality ?? taskModality) ?? null,
+    domain: specialization ?? category ?? taskType ?? null,
+    contextSize: typeof params.context_size === "number" && params.context_size > 0 ? params.context_size : null,
+    specializationRequired: specialization !== undefined,
+    parallelizable: params.parallelizable === true || params.parallelizable === "true",
+  };
+  const delegation = delegationGate({
+    signals,
+    selfScore: self?.score ?? null,
+    bestScore: primary ? primary.score : 0,
+    selfStatus: self?.status ?? null,
+    threshold:
+      Number.isFinite(Number(params.delegation_threshold)) && Number(params.delegation_threshold) >= 0
+        ? Number(params.delegation_threshold)
+        : undefined,
+  });
+
   return NextResponse.json(
     {
       ok: true,
@@ -136,6 +189,21 @@ async function handle(request: NextRequest, body: Record<string, unknown> | null
       guidance: REGISTRY_STALENESS_GUIDANCE,
       registry: registryVersionInfo(),
       profile,
+      delegation,
+      matrix,
+      cache: cacheHit
+        ? {
+            signature,
+            hit: true,
+            model: cacheHit.model,
+            provider: cacheHit.provider,
+            uses: cacheHit.uses,
+            attempts: cacheHit.attempts,
+            successes: cacheHit.successes,
+            success_rate: cacheHit.attempts > 0 ? Number((cacheHit.successes / cacheHit.attempts).toFixed(3)) : null,
+            note: "known task — you may take the cached model without re-reasoning; override freely",
+          }
+        : { signature, hit: false, model: null },
       task: { type: taskType ?? null, modality: (requestedModality ?? taskModality) ?? null, specialization: specialization ?? null, category: category ?? null },
       filter: { ...activeFilter, pool: descriptors.length, eliminated, candidates: candidates.length },
       tiers: {

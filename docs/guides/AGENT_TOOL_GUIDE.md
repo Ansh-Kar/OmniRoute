@@ -164,6 +164,28 @@ model whose `ui_understanding` is high even when it's SECONDARY.
 The routing engine knows whether a model is "better than you" — you don't
 have to. Use it.
 
+### The delegation gate + the fast path (B15)
+
+Three additions make the decision cheaper still:
+
+- **`delegation`** — a hard threshold, pure code: specialist advantage
+  below 5 points (default) → `self` ("not worth a round-trip"); above →
+  `delegate`. `incapable` is a fact, not advice. Tune per call with
+  `delegation_threshold` (points).
+- **`matrix`** — the whole candidate field as one compact line each
+  (`P1 qwen3-vl  vision 94 | hist 92% | p50 1.2s | $0.40/M`), you tagged
+  `←you`. Read the matrix first; open `candidates` only when something
+  needs digging.
+- **`cache`** — a known task signature with a cached model and its
+  observed success rate. On a hit you may take the model without
+  re-reasoning — override freely when the request is unusual. The system
+  invalidates the entry itself when the cached model fails on merit
+  (infra timeouts do NOT invalidate — the choice wasn't wrong).
+
+And the failure memory works for you silently: a provider outage is never
+recorded as "the model is bad at this task" — only genuine quality
+failures move reputation.
+
 ### The task profile (advisory, not mandatory)
 
 Since B13 the candidates response carries a `profile` block — read it before

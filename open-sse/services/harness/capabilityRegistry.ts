@@ -194,8 +194,12 @@ function deriveCapabilities(entry: ModelTagEntry): CapabilityMatrix {
 }
 
 function laplaceSuccess(stat: ModelStat | undefined): number | null {
-  if (!stat || stat.successes + stat.failures === 0) return null;
-  return (stat.successes + 1) / (stat.successes + stat.failures + 2);
+  // B15: reputation failures only — infra failures (timeout, provider
+  // outage, …) are excused so an outage never reads as "bad at the task".
+  if (!stat) return null;
+  const reputation = Math.max(0, stat.failures - (stat.infraFailures ?? 0));
+  if (stat.successes + reputation === 0) return null;
+  return (stat.successes + 1) / (stat.successes + reputation + 2);
 }
 
 function avgLatency(stat: ModelStat | undefined): number | null {
@@ -593,6 +597,39 @@ export function selfAssess(
   }
   const wasFiltered = eliminated.some((descriptor) => descriptor.id === callerModel);
   return { model: callerModel, rank: null, score: null, would_win: false, status: wasFiltered ? "filtered" : "unregistered" };
+}
+
+/**
+ * B15: the compact candidate matrix — the few-hundred-token representation
+ * of the ranked field. Hermes sees every candidate WITHOUT 12 × 2-3k tokens
+ * of full metadata; the full `candidates` array stays for digging in.
+ * Lines look like:
+ *   "P1 qwen3-vl  ocr 96 | hist 95% | p50 1.2s | $0.4/M"
+ *   "S2 model-b   ocr 94 | hist —   | p50 —    | —"
+ */
+export function candidateMatrixLines(
+  ranked: RankedCandidate[],
+  context: { category?: string; selfModel?: string | null } = {}
+): string[] {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const lines: string[] = [];
+  for (const candidate of ranked) {
+    const d = candidate.descriptor;
+    const tier = candidate.tier === "primary" ? "P" : candidate.tier === "secondary" ? "S" : "F";
+    const benchmarkRaw =
+      (context.category !== undefined ? d.benchmarks[context.category] : undefined) ??
+      d.benchmarks.composite;
+    const benchmark = typeof benchmarkRaw === "number" ? String(Math.round(benchmarkRaw)) : "—";
+    const observed = context.category !== undefined ? (d as DescriptorWithRates).categoryRates?.get(context.category) : undefined;
+    const hist = typeof observed === "number" ? `${Math.round(observed * 100)}%` : "—";
+    const p50 = d.operational.latency_p50_ms;
+    const latency = typeof p50 === "number" && p50 > 0 ? `${p50 < 1000 ? `${Math.round(p50)}ms` : `${(p50 / 1000).toFixed(1)}s`}` : "—";
+    const cost = d.operational.cost_per_million_tokens;
+    const costText = typeof cost === "number" && cost > 0 ? `$${cost < 10 ? cost.toFixed(2) : Math.round(cost)}/M` : "—";
+    const tag = context.selfModel && d.id === context.selfModel ? " ←you" : "";
+    lines.push(`${tier}${candidate.rank} ${d.id}  ${context.category ?? "score"} ${benchmark} | hist ${hist} | p50 ${latency} | ${costText}${tag}`);
+  }
+  return lines;
 }
 
 /** Serialize a ranked candidate for the API surface. */
