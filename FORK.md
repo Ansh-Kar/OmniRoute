@@ -9,6 +9,11 @@ don't throttle the concurrency back down.
 Branch: `fork/parallel-execution`. Everything else is upstream — rebase often,
 diverge deliberately.
 
+**`CORE.md`** (repo root) is the design constitution — the boundaries,
+prime directives, and extension playbook. Read it before any upgrade,
+rebase, or agent-driven modification; this file is the changelog, CORE.md
+is the intent.
+
 ## Why
 
 - Adding more providers only maximizes usage if requests actually run **in
