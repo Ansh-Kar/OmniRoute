@@ -134,6 +134,18 @@ swarms. The ordering rule is structural, not vibes:
 Design target: **~40 models admitted across providers**, chosen by what
 they're good at. How the federation holds that many without rot:
 
+- **Provider identity = the connection, never the vendor.** A model's
+  `provider` is the configured upstream that transports the request
+  (`openrouter`, `kiro`, …) — NOT the model's vendor (`openai`,
+  `anthropic`). The vendor is namespace/metadata only. If `gpt-xx` shows
+  provider "openai", the model is sitting under a vendor-typed provider
+  entry — move it under the aggregator's provider type. This is
+  load-bearing: the breaker (B9), leases (B5), and the bias-guard calling
+  basis (B11) all key on provider identity; a vendor label there would
+  fuse unrelated connections into one fake provider and trip the wrong
+  breaker. (Verified 2026-09-14: OmniRoute labels by provider type
+  everywhere — catalog `owned_by`, tag index, rankings — so the label
+  always tells you which connection serves the model.)
 - **Registry-driven admission** — benchmark-gated, versioned; refreshed at
   boot and by cron; deprecated models are *deleted* on refresh (no zombie
   entries). The registry is local at decision time.
