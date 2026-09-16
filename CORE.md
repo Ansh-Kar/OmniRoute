@@ -122,7 +122,12 @@ swarms. The ordering rule is structural, not vibes:
   `objectives/spawn/wait` — children of one objective run simultaneously).
 - **Sequential / any order** when dependencies exist — wave N+1 consumes
   wave N's outputs (B3.5 blackboard shares state; the judge scores).
-- **Never random reliance on swarm.** Parallelism follows dependency
+- **Bodies are planned, not executed.** The fork emits a `spawn_plan`
+  (B16.2, on `/v1/router/execution` when the ladder escalates to agent)
+  mapped 1:1 to native Bot Mode surface — profile create, model pin, Bot
+  Chat handoffs, group rooms, `[bot:]` cron routines. Hermes Bot Mode
+  spawns the bodies in its own runtime; OmniRoute never does.
+- - **Never random reliance on swarm.** Parallelism follows dependency
   structure, not enthusiasm. A swarm is justified only by task shape
   (long + parallelizable + specialized), never by default.
 - **And Hermes does tasks itself** whenever expected quality is
